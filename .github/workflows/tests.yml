@@ -45,3 +45,21 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -e '.[test,stellar]'
       - run: pytest -ra tests/test_hst_photometry.py
+  stellar-hst-and-mismatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SPS_HOME: /tmp/chromorph-fsps
+      PYSYN_CDBS: https://ssb.stsci.edu/trds/
+      CHROMORPH_FSPS_TESTS: '1'
+      CHROMORPH_STELLAR_TESTS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: git clone --depth 1 https://github.com/cconroy20/fsps.git "$SPS_HOME"
+      - run: python -m pip install -e '.[test,stellar]'
+      - run: pytest -ra --durations=5 tests/test_stellar_integration.py tests/test_fsps_physics.py::test_live_out_of_family_nebular_spectrum_is_detected

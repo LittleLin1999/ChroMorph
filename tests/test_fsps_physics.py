@@ -84,3 +84,31 @@ def test_live_joint_age_dust_mass_recovery(separation):
             for name, target in [('young', [.2, .1, 8.]), ('old', [3., .7, 8.5])]:
                 actual = [result.values[name+'.sed.'+k] for k in ['age', 'av', 'log_mass']]
                 np.testing.assert_allclose(actual, target, rtol=.03, atol=.03)
+
+
+def test_live_out_of_family_nebular_spectrum_is_detected():
+    obs = stellar_observations(); context = SEDContext(redshift=.2)
+    injected_sed = FSPSStellarSED(sfh='young', nebular=True, parameters={
+        'age': Parameter(.005, .001, 5., vary=False),
+        'log_mass': Parameter(8., 5., 11., vary=False),
+        'av': Parameter(.1, 0., 2., vary=False),
+        'metallicity': Parameter(-.5, -2., .3, vary=False)})
+    with Scene(obs, context=context) as injection:
+        injection.add_component(component('a', injected_sed, 15.))
+        data = simulate(injection, seed=1042)
+    # This explicitly restricted old, non-nebular template family cannot
+    # reproduce the injected young nebular colors with mass alone.
+    wrong_sed = FSPSStellarSED(sfh='old', nebular=False, parameters={
+        'age': Parameter(3., .001, 5., vary=False),
+        'log_mass': Parameter(8., 5., 11.),
+        'av': Parameter(0., 0., 2., vary=False),
+        'metallicity': Parameter(-.5, -2., .3, vary=False)})
+    with Scene(data, context=context) as wrong:
+        wrong.add_component(component('a', wrong_sed, 15.))
+        constrained = wrong.fit(multistart=1, max_nfev=40)
+    with Scene(data, context=context) as free:
+        free.add_component(component('a', FreeBandSED(), 15.))
+        baseline = free.fit(multistart=1)
+    assert constrained.chi2/constrained.n_pixels > 3
+    assert baseline.chi2/baseline.n_pixels < 1.3
+    assert constrained.chi2 > baseline.chi2+100
