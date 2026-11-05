@@ -13,3 +13,5 @@ Checked during implementation (2026-11-05):
 In particular, python-fsps recommends one StellarPopulation instance per
 program because its underlying model state is shared. ChroMorph gives every
 physical component a distinct process; this is not a shared global SED vector.
+
+- [emcee EnsembleSampler and random state](https://emcee.readthedocs.io/en/stable/user/sampler/)
