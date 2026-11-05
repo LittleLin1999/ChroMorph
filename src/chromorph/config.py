@@ -1,5 +1,6 @@
 """YAML parsing with explicit component settings and rejection of unknown keys."""
 from pathlib import Path
+from dataclasses import replace
 import yaml
 from .parameters import Parameter
 from .scene import Scene
@@ -27,7 +28,7 @@ def load_config(path):
     if not isinstance(config, dict):
         raise ValueError("Configuration must be a YAML mapping")
     _keys(config, ['target', 'data_root', 'metadata', 'morphology', 'psf', 'context',
-                   'components', 'ties', 'centroid_groups', 'throughputs', 'fitting'], 'top-level')
+                   'components', 'ties', 'centroid_groups', 'throughputs', 'fitting', 'initial_values'], 'top-level')
     morphology = config.get('morphology', {})
     _keys(morphology, ['wavelength_mode', 'centroid_mode', 'renderer'], 'morphology')
     if morphology.get('wavelength_mode', 'constant') != 'constant' or morphology.get('renderer', 'galsim') != 'galsim':
@@ -44,9 +45,11 @@ def load_config(path):
 def build_scene(config, observations, *, renderer=None, context=None):
     fit = config.get('fitting', {})
     _keys(fit, ['optimizer', 'multistart', 'seed', 'max_nfev', 'variable_projection',
-                'background', 'registration', 'calibration', 'compare_sed_modes'], 'fitting')
-    if fit.get('optimizer', 'scipy') != 'scipy':
-        raise ValueError("Only the scipy optimizer is supported")
+                'background', 'registration', 'calibration', 'compare_sed_modes', 'workers',
+                'method', 'likelihood', 'project_stellar_mass', 'estimate_uncertainty',
+                'checkpoint_directory', 'tolerance'], 'fitting')
+    if fit.get('optimizer', 'scipy') not in {'scipy', 'trf', 'L-BFGS-B'}:
+        raise ValueError('Use scipy, trf or L-BFGS-B for deterministic fitting')
     if fit.get('compare_sed_modes', False):
         raise ValueError("Use the compare CLI with separate A/B/C files to specify each SED choice explicitly")
     scene = Scene(observations, context=context or SEDContext(**config.get('context', {})), renderer=renderer,
@@ -61,7 +64,7 @@ def build_scene(config, observations, *, renderer=None, context=None):
                 _keys(sedconfig, ['fluxes'], 'free SED')
                 sed = FreeBandSED(parameters=overrides, **sedconfig)
             elif model == 'fsps':
-                _keys(sedconfig, ['sfh', 'nebular', 'dust', 'dust_type', 'cache_size'], 'stellar SED')
+                _keys(sedconfig, ['sfh', 'nebular', 'dust', 'dust_type', 'cache_size', 'cache_bytes'], 'stellar SED')
                 sed = FSPSStellarSED(parameters=overrides, **sedconfig)
             else:
                 raise ValueError(f"Unknown SED model {model}")
@@ -84,6 +87,10 @@ def build_scene(config, observations, *, renderer=None, context=None):
             scene.tie_centroids([c.name for c in scene.components])
         elif mode == 'grouped' and not config.get('centroid_groups'):
             raise ValueError("Grouped centroids require explicit centroid_groups")
+        for name, value in config.get('initial_values', {}).items():
+            if name not in scene.registry.parameters or name in scene.registry.ties:
+                raise ValueError('Initial value requires a registered untied parameter: '+name)
+            scene.registry.parameters[name] = replace(scene.registry.parameters[name], value=float(value))
         return scene
     except Exception:
         scene.close()

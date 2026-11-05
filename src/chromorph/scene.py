@@ -12,14 +12,18 @@ from .spatial import PointSource
 
 class Scene:
     def __init__(self, observations, *, context=None, renderer=None,
-                 fit_background=False, fit_registration=False, fit_calibration=False):
+                 fit_background=False, fit_registration=False, fit_calibration=False,
+                 cache_bytes=256*1024**2):
         self.observations = tuple(observations)
         if not self.observations or len({o.name for o in self.observations}) != len(self.observations):
             raise ValueError("Need observations with distinct names")
         self.context = context or SEDContext()
         self.renderer = renderer
         self.components = []
-        self._basis_cache = {}
+        from .cache import ExactLRU
+        self._basis_cache = ExactLRU(cache_bytes)
+        self._compressed = None
+        self.metrics = dict(render_calls=0)
         self.registry = Registry()
         for index, o in enumerate(self.observations):
             identifier(o.name)
@@ -92,26 +96,42 @@ class Scene:
     def morphology(self, component, values):
         return {key: values[f"{component.name}.morphology.{key}"] for key in component.parameters}
 
-    def basis(self, values):
+    def spatial_key(self, component, observation, values):
+        self._ensure_renderer()
+        morphology = self.morphology(component, values)
+        shift = tuple(values[f'observation.{observation.name}.{axis}'] for axis in ['dx', 'dy'])
+        psf = observation.psf
+        renderer_key = getattr(self.renderer, 'cache_token', lambda: id(self.renderer))()
+        return (component.name, type(component).__name__, renderer_key,
+                tuple(sorted(morphology.items())), shift, tuple(observation.matrix.ravel()),
+                tuple(observation.offset), observation.data.shape, psf.cache_token())
+
+    def basis_observation(self, observation, values):
         self._ensure_renderer()
         result = {}
-        for o in self.observations:
-            shift = np.array([values[f"observation.{o.name}.{axis}"] for axis in ['dx', 'dy']])
-            result[o.name] = {}
-            for c in self.components:
-                morphology = self.morphology(c, values)
-                key = (id(self.renderer), tuple(sorted(morphology.items())), tuple(shift),
-                       tuple(o.matrix.ravel()), tuple(o.offset), o.data.shape, id(o.psf),
-                       tuple(o.psf.center), o.psf.pixel_integrated)
-                cache_id = (o.name, c.name)
-                cached = self._basis_cache.get(cache_id)
-                if cached is None or cached[0] != key:
-                    image = np.asarray(self.renderer.render(c, morphology, o, shift), dtype=float)
-                    image.setflags(write=False)
-                    cached = (key, image)
-                    self._basis_cache[cache_id] = cached
-                result[o.name][c.name] = cached[1]
+        shift = np.array([values[f'observation.{observation.name}.{axis}'] for axis in ['dx', 'dy']])
+        for component in self.components:
+            key = self.spatial_key(component, observation, values)
+            cache_id = (observation.name, key)
+            cached = self._basis_cache.get(cache_id)
+            if cached is None:
+                image = np.asarray(self.renderer.render(component, self.morphology(component, values), observation, shift), dtype=float)
+                self.metrics['render_calls'] += 1
+                image.setflags(write=False)
+                cached = image
+                self._basis_cache[cache_id] = cached
+            result[component.name] = cached
         return result
+
+    def basis(self, values):
+        return {o.name: self.basis_observation(o, values) for o in self.observations}
+
+    @property
+    def compressed(self):
+        if self._compressed is None:
+            from .likelihood import CompressedGaussianLikelihood
+            self._compressed = CompressedGaussianLikelihood(self)
+        return self._compressed
 
     def predict(self, values=None, *, basis=None):
         if not self.components:
@@ -133,10 +153,22 @@ class Scene:
 
     def residual(self, values, *, basis=None, include_priors=True):
         models, _, _ = self.predict(values, basis=basis)
-        data = np.concatenate([((o.data-models[o.name])/o.sigma)[o.mask] for o in self.observations])
+        from .noise import whitening_for
+        data = np.concatenate([whitening_for(o).whiten((o.data-models[o.name])[o.mask])
+                               for o in self.observations])
         if not np.isfinite(data).all():
             raise ValueError("Nonfinite likelihood")
         return np.r_[data, self.registry.prior_residuals(values)] if include_priors else data
+
+    def pixel_loglikelihood(self, values):
+        from .noise import whitening_for
+        residual = self.residual(values, include_priors=False)
+        return float(sum(whitening_for(o).log_normalization for o in self.observations)
+                     -.5*(residual@residual))
+
+    def clear_caches(self):
+        self._basis_cache.clear()
+        self._compressed = None
 
     def _eligible_linear(self):
         linked = set(self.registry.ties) | set(self.registry.ties.values())
@@ -155,7 +187,10 @@ class Scene:
         for n in eligible:
             base[n] = 0.
         baseline, _, _ = self.predict(base, basis=basis)
-        target = np.concatenate([((o.data-baseline[o.name])/o.sigma)[o.mask] for o in self.observations])
+        from .noise import whitening_for
+        whiteners = {o.name: whitening_for(o) for o in self.observations}
+        target = np.concatenate([whiteners[o.name].whiten((o.data-baseline[o.name])[o.mask])
+                                 for o in self.observations])
         design = np.zeros((len(target), len(eligible)))
         row = 0
         for o in self.observations:
@@ -164,14 +199,32 @@ class Scene:
                 component, _, band = name.split('.')
                 if band == o.band:
                     rate = np.exp(values[f"observation.{o.name}.log_calibration"])/o.ujy_per_rate
-                    design[row:row+count, col] = (basis[o.name][component]*rate/o.sigma)[o.mask]
+                    design[row:row+count, col] = whiteners[o.name].whiten((basis[o.name][component]*rate)[o.mask])
             row += count
         fluxes, _ = nnls(design, target, maxiter=max(100, 10*len(eligible)))
         updated = dict(values)
         updated.update(zip(eligible, map(float, fluxes)))
         return updated
 
-    def fit(self, *, multistart=3, seed=0, max_nfev=300, variable_projection=True):
+    def fit(self, *, multistart=3, seed=0, max_nfev=300, variable_projection=True,
+            workers=1, likelihood='compressed', optimizer='trf', project_stellar_mass=True,
+            estimate_uncertainty=True, checkpoint_directory=None, tolerance=1e-7):
+        if likelihood == 'pixel':
+            if optimizer != 'trf':
+                raise ValueError('Pixel reference fitting supports trf; use compressed for L-BFGS-B')
+            return self._fit_reference(multistart=multistart, seed=seed, max_nfev=max_nfev,
+                                       variable_projection=variable_projection, workers=workers)
+        if likelihood != 'compressed':
+            raise ValueError('likelihood must be compressed or pixel')
+        if workers != 1:
+            raise ValueError('Compressed fitting uses one dependency-aware scene; parallelize independent models or use likelihood="pixel" for parallel rendering derivatives')
+        from .optimize import fit_scene
+        return fit_scene(self, optimizer=optimizer, multistart=multistart, seed=seed,
+            max_nfev=max_nfev, variable_projection=variable_projection,
+            project_stellar_mass=project_stellar_mass, estimate_uncertainty=estimate_uncertainty,
+            checkpoint_directory=checkpoint_directory, tolerance=tolerance)
+
+    def _fit_reference(self, *, multistart=3, seed=0, max_nfev=300, variable_projection=True, workers=1):
         from .result import FitResult
         if not self.components:
             raise ValueError("Scene has no components")
@@ -191,25 +244,36 @@ class Scene:
             v, basis = decode(x)
             return self.residual(v, basis=basis)
         objective(initial)  # dependency/configuration errors are never swallowed
+        worker_map = None
+        if workers != 1:
+            if not isinstance(workers, int) or workers < 1:
+                raise ValueError('workers must be a positive integer')
+            from .parallel import JacobianWorkers
+            worker_map = JacobianWorkers(self, names, eligible, workers)
         rng = np.random.default_rng(seed)
         runs = []
-        for index in range(int(multistart)):
-            start = initial.copy()
-            if index:
-                width = np.where(np.isfinite(lo) & np.isfinite(hi), hi-lo, np.maximum(abs(initial), 1.))
-                start += rng.normal(0, .15, len(start))*width
-                start = np.maximum(np.minimum(start, hi-1e-9), lo+1e-9)
-            if names:
-                fit = least_squares(objective, start, bounds=(lo, hi), x_scale='jac',
-                                    diff_step=1e-4, ftol=1e-7, xtol=1e-7, gtol=1e-7,
-                                    max_nfev=max_nfev)
-                vector, success, message, nfev = fit.x, bool(fit.success), fit.message, fit.nfev
-            else:
-                vector, success, message, nfev = start, True, 'Linear solve only', 1
-            values, _ = decode(vector)
-            residual = self.residual(values)
-            runs.append(dict(values=values, objective=float(residual@residual),
-                             success=success, message=str(message), nfev=int(nfev)))
+        try:
+            for index in range(int(multistart)):
+                start = initial.copy()
+                if index:
+                    width = np.where(np.isfinite(lo) & np.isfinite(hi), hi-lo, np.maximum(abs(initial), 1.))
+                    start += rng.normal(0, .15, len(start))*width
+                    start = np.maximum(np.minimum(start, hi-1e-9), lo+1e-9)
+                if names:
+                    extra = {} if worker_map is None else dict(workers=worker_map)
+                    fit = least_squares(objective, start, bounds=(lo, hi), x_scale='jac',
+                                        diff_step=1e-4, ftol=1e-7, xtol=1e-7, gtol=1e-7,
+                                        max_nfev=max_nfev, **extra)
+                    vector, success, message, nfev = fit.x, bool(fit.success), fit.message, fit.nfev
+                else:
+                    vector, success, message, nfev = start, True, 'Linear solve only', 1
+                values, _ = decode(vector)
+                residual = self.residual(values)
+                runs.append(dict(values=values, objective=float(residual@residual),
+                                 success=success, message=str(message), nfev=int(nfev)))
+        finally:
+            if worker_map is not None:
+                worker_map.close()
         best = min(runs, key=lambda r: r['objective'])
         result = FitResult(self, best['values'], runs, eligible)
         result.estimate_uncertainty()
@@ -219,6 +283,11 @@ class Scene:
         for c in self.components:
             if hasattr(c.sed, 'close'):
                 c.sed.close()
+
+    def sample_polychord(self, directory, **options):
+        """Sample the joint posterior with analytically marginalized nuclear fluxes."""
+        from .inference import PolyChordPosterior
+        return PolyChordPosterior(self).run(directory, **options)
 
     def __enter__(self):
         return self

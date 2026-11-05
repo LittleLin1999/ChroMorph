@@ -31,7 +31,7 @@ jobs:
       - name: Fetch public FSPS reference libraries
         run: git clone --depth 1 https://github.com/cconroy20/fsps.git "$SPS_HOME"
       - run: python -m pip install -e '.[test,stellar]'
-      - run: pytest -ra tests/test_fsps_physics.py
+      - run: pytest -ra tests/test_fsps_physics.py tests/test_constant_fsps_live.py
   hst-photometry:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -44,7 +44,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[test,stellar]'
-      - run: pytest -ra tests/test_hst_photometry.py
+      - run: pytest -ra tests/test_hst_photometry.py tests/test_photometry_operator.py
   stellar-hst-and-mismatch:
     runs-on: ubuntu-latest
     timeout-minutes: 15

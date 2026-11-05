@@ -141,6 +141,7 @@ class FitResult:
             centroids[c.name] = dict(reference_xy=xy, offset_reference_pixels=offset,
                                      offset_anchor=None if anchor is None else anchor.name)
         data = dict(values=self.values, chi2=self.chi2, bic_like=self.bic_like,
+                    performance=getattr(self, 'performance', None),
                     success=self.success, best_optimizer=self.best_optimizer, centroids=centroids,
                     n_pixels=self.n_pixels, n_parameters=self.n_parameters, multistart=self.runs,
                     projected_parameters=self.projected, uncertainty=self.uncertainty,

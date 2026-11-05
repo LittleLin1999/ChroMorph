@@ -4,20 +4,31 @@ from .spatial import PointSource
 
 
 class GalSimRenderer:
-    def __init__(self, interpolation_order=5, maximum_fft_size=16384):
+    def __init__(self, interpolation_order=5, maximum_fft_size=16384,
+                 folding_threshold=1e-4, maxk_threshold=1e-5):
         try:
             import galsim
         except ImportError as exc:
             raise ImportError("GalSim is required for spatial rendering; install chromorph dependencies") from exc
         self.gs = galsim
         self.interpolation_order = interpolation_order
+        self.configuration = dict(interpolation_order=interpolation_order,
+                                  maximum_fft_size=maximum_fft_size,
+                                  folding_threshold=folding_threshold, maxk_threshold=maxk_threshold)
         self.gsparams = galsim.GSParams(maximum_fft_size=maximum_fft_size,
-                                       folding_threshold=1e-4, maxk_threshold=1e-5)
+                                       folding_threshold=folding_threshold, maxk_threshold=maxk_threshold)
         self._psfs = {}
+
+    def __reduce__(self):
+        return (_rebuild_renderer, (self.configuration,))
+
+    def cache_token(self):
+        return (type(self).__name__, repr(self.gsparams), self.interpolation_order)
 
     def _psf(self, observation):
         # Observation/PSF instances are kept alive by Scene; identity is stable.
-        key = id(observation.psf)
+        p = observation.psf
+        key = (p.cache_token(), repr(self.gsparams), self.interpolation_order)
         if key not in self._psfs:
             psf = observation.psf
             image = self.gs.ImageD(np.array(psf.image, copy=True), scale=1.0)
@@ -74,3 +85,7 @@ class GalSimRenderer:
         return dict(same_grid_relative_l2=relative, same_grid_sum=float(rendered.sum()),
                     half_pixel_sum=float(shifted.sum()), method="no_pixel" if psf.pixel_integrated else "auto",
                     pass_same_grid=relative < .01)
+
+
+def _rebuild_renderer(configuration):
+    return GalSimRenderer(**configuration)

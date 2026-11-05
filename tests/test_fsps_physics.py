@@ -32,8 +32,8 @@ def stellar_observations():
     return obs
 
 
-def population(age, av, mass, metallicity):
-    return FSPSStellarSED(parameters={
+def population(age, av, mass, metallicity, sfh='ssp'):
+    return FSPSStellarSED(sfh=sfh, parameters={
         'age': Parameter(age, .05, 5), 'av': Parameter(av, 0., 2.),
         'log_mass': Parameter(mass, 5., 11.),
         'metallicity': Parameter(metallicity, -2., .3, vary=False)})
@@ -46,10 +46,11 @@ def component(name, sed, x):
         'q': Parameter(.8, .1, 1, vary=False), 'pa': Parameter(20., -180, 180, vary=False)})
 
 
-def test_live_process_isolation_mass_redshift_and_distinct_populations():
+@pytest.mark.parametrize('sfhs', [('constant', 'ssp'), ('ssp', 'constant')])
+def test_live_process_isolation_mass_redshift_and_distinct_populations(sfhs):
     obs = stellar_observations()
     with Scene(obs, context=SEDContext(redshift=.2)) as scene:
-        a, b = population(.2, .1, 8., -.5), population(3., .7, 8.5, -.1)
+        a, b = population(.2, .1, 8., -.5, sfh=sfhs[0]), population(3., .7, 8.5, -.1, sfh=sfhs[1])
         scene.add_component(component('a', a, 9.)); scene.add_component(component('b', b, 21.))
         values = scene.registry.unpack()
         fa = a.fluxes(values, 'a', obs, scene.context); fb = b.fluxes(values, 'b', obs, scene.context)
