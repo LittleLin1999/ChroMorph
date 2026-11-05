@@ -38,7 +38,11 @@ class GalSimRenderer:
             obj = psf
         else:
             # GalSim shear preserves circularized radius; API re is semimajor.
-            intrinsic = gs.Sersic(n=morphology['n'],
+            # GalSim 2.8.5 can fail stepK bracketing for n infinitesimally
+            # above 0.5. Use its exact Gaussian-index limit within 1e-10,
+            # far below the rendering and finite-difference tolerances.
+            index = .5 if abs(morphology['n']-.5) < 1e-10 else morphology['n']
+            intrinsic = gs.Sersic(n=index,
                                   half_light_radius=morphology['re']*np.sqrt(morphology['q']),
                                   flux=1.0, gsparams=self.gsparams)
             intrinsic = intrinsic.shear(q=morphology['q'], beta=morphology['pa']*gs.degrees)
