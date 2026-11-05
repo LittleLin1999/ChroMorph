@@ -223,7 +223,9 @@ class FitResult:
             if not isinstance(c.sed, FreeBandSED) and hasattr(c.sed, 'spectrum'):
                 w, flam = c.sed.spectrum(self.values, c.name, scene.context)
                 fnu = flam*w**2/2.99792458e18*1e29
-                ax.plot(w/1e4, fnu, color=colors[index], lw=.8)
+                visible = ((w/1e4 >= waves.min()*.85) & (w/1e4 <= waves.max()*1.15)
+                           & np.isfinite(fnu) & (fnu > 0))
+                ax.plot(w[visible]/1e4, fnu[visible], color=colors[index], lw=.8)
         ax.plot(waves, [sum(self.fluxes[c.name][o.band] for c in scene.components) for o in observed], 'k*', ms=10, label='Total predicted photometry')
         ax.set(xscale='log', yscale='log', xlabel='Observed wavelength (µm)', ylabel='Flux density (µJy)', xlim=(waves.min()*.85, waves.max()*1.15))
         ax.legend(fontsize=8); fig.savefig(directory/'sed.png', dpi=180); fig.savefig(directory/'sed.pdf'); plt.close(fig)
