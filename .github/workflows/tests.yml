@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      SPS_HOME: ${{ runner.temp }}/fsps
+      SPS_HOME: /tmp/chromorph-fsps
       CHROMORPH_FSPS_TESTS: '1'
       OPENBLAS_NUM_THREADS: '1'
       OMP_NUM_THREADS: '1'
