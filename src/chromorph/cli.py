@@ -57,7 +57,7 @@ def example_configs(report):
             count += 1
             if mode == 'C_hybrid' and count > 2:
                 continue
-            c['sed'] = dict(model='fsps', sfh='ssp', nebular=False, dust=True,
+            c['sed'] = dict(model='fsps', sfh='ssp', nebular=True, dust=True,
                             parameters=dict(log_mass=dict(value=8.5, min=4, max=12),
                                             age=dict(value=.3, min=.001, max=6),
                                             metallicity=dict(value=-.3, min=-2, max=.3),

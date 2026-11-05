@@ -28,7 +28,7 @@ components:
   sed:
     model: fsps
     sfh: ssp
-    nebular: false
+    nebular: true
     dust: true
   parameters:
     x:
@@ -60,7 +60,7 @@ components:
   sed:
     model: fsps
     sfh: ssp
-    nebular: false
+    nebular: true
     dust: true
   parameters:
     x:
@@ -92,7 +92,7 @@ components:
   sed:
     model: fsps
     sfh: ssp
-    nebular: false
+    nebular: true
     dust: true
   parameters:
     x:

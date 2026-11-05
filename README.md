@@ -87,7 +87,7 @@ chromorph validate examples/generated/A_free.yaml \
 
 The checked-in example configurations contain illustrative starting values,
 not fitted J1042 measurements. Regenerate them against your actual data root. Model B
-uses a **separate** FSPS object for each extended component; Model C uses FSPS
+uses a **separate** FSPS object with nebular emission enabled for each extended component; Model C uses FSPS
 for two clumps and free-band SEDs for the remaining components. Edit component
 initial guesses, bounds, SFH, nebular choices and dust laws independently.
 Generated Sérsic-index bounds are intersected with GalSim's supported
