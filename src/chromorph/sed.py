@@ -2,7 +2,7 @@
 from __future__ import annotations
 from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import multiprocessing
 import numpy as np
 from astropy import units as u
@@ -37,6 +37,10 @@ class FreeBandSED:
     def __init__(self, fluxes=None, parameters=None):
         self.initial_fluxes = dict(fluxes or {})
         self.parameters = dict(parameters or {})
+
+    def describe(self):
+        return dict(model='free', initial_fluxes=self.initial_fluxes,
+                    parameters={n: asdict(p) for n, p in self.parameters.items()})
 
     def register(self, registry, name, bands):
         unknown = (set(self.initial_fluxes) | set(self.parameters))-set(bands)
@@ -109,10 +113,17 @@ class FSPSStellarSED:
         if not dust and (self.parameters['av'].value != 0 or self.parameters['av'].vary):
             raise ValueError("dust=False requires fixed av=0")
         self._executor = None
+        self._executor_configuration = None
         self._cache = OrderedDict()
+        self._flux_cache = OrderedDict()
         self.cache_size = int(cache_size)
         if self.cache_size < 1:
             raise ValueError("cache_size must be positive")
+
+    def describe(self):
+        return dict(model='fsps', sfh=self.sfh, nebular=self.nebular, dust=self.dust,
+                    configuration=dict(self.configuration), mass_definition='formed_solar_mass',
+                    parameters={n: asdict(p) for n, p in self.parameters.items()})
 
     def register(self, registry, name, bands):
         for key, p in self.parameters.items():
@@ -121,10 +132,14 @@ class FSPSStellarSED:
     def _spectrum(self, parameters):
         key = tuple(sorted(parameters.items())) + tuple(sorted(self.configuration.items()))
         if key not in self._cache:
+            configuration_key = tuple(sorted(self.configuration.items()))
+            if self._executor is not None and self._executor_configuration != configuration_key:
+                self.close()
             if self._executor is None:
                 self._executor = ProcessPoolExecutor(
                     max_workers=1, mp_context=multiprocessing.get_context("spawn"),
                     initializer=_initialize_fsps, initargs=(dict(self.configuration),))
+                self._executor_configuration = configuration_key
             wave, spec, formed_mass = self._executor.submit(_evaluate_fsps, dict(parameters)).result()
             if formed_mass <= 0 or not np.isfinite(spec).all():
                 raise ValueError("FSPS returned invalid spectrum/mass")
@@ -157,6 +172,12 @@ class FSPSStellarSED:
         return observed_wave, flam
 
     def fluxes(self, values, name, observations, context):
+        key = (name, tuple((k, values[f"{name}.sed.{k}"]) for k in self.parameters),
+               tuple(sorted(self.configuration.items())), self.dust, self.nebular, self.sfh, context,
+               tuple((o.band, getattr(o.throughput, 'fingerprint', None) or id(o.throughput))
+                     for o in observations))
+        if key in self._flux_cache:
+            return dict(self._flux_cache[key])
         wave, flam = self.spectrum(values, name, context)
         fluxes = {}
         for o in observations:
@@ -166,6 +187,9 @@ class FSPSStellarSED:
             if o.band in fluxes and not np.isclose(fluxes[o.band], flux, rtol=1e-6):
                 raise ValueError("Repeated filter has inconsistent throughput; use distinct band identifiers")
             fluxes[o.band] = flux
+        self._flux_cache[key] = dict(fluxes)
+        if len(self._flux_cache) > self.cache_size:
+            self._flux_cache.popitem(last=False)
         return fluxes
 
     def close(self):

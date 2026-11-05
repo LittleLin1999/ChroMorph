@@ -31,6 +31,8 @@ class FitResult:
         self.values = dict(values)
         self.runs = runs
         self.projected = list(projected)
+        self.best_optimizer = min(runs, key=lambda r: r['objective'])
+        self.success = bool(self.best_optimizer['success'])
         self.models, self.images, self.fluxes = scene.predict(values)
         r = scene.residual(values, include_priors=False)
         self.chi2 = float(r@r)
@@ -39,6 +41,9 @@ class FitResult:
         self.bic_like = self.chi2 + self.n_parameters*np.log(self.n_pixels)
         self.warnings = ["Diagonal fixed-noise likelihood; drizzle covariance is not included.",
                          "Local linear uncertainties do not capture nonlinearity or label switching."]
+
+        if not self.success:
+            self.warnings.append('Best optimizer run did not converge; inspect multistart results before interpretation.')
 
     def estimate_uncertainty(self):
         scene = self.scene
@@ -114,6 +119,7 @@ class FitResult:
             except ValueError:
                 return -np.inf
         sampler = emcee.EnsembleSampler(walkers, ndim, logp)
+        sampler.random_state = np.random.RandomState(seed).get_state()
         sampler.run_mcmc(start, steps, progress=False)
         return sampler
 
@@ -127,12 +133,24 @@ class FitResult:
                 versions[name] = importlib.metadata.version(name)
             except importlib.metadata.PackageNotFoundError:
                 versions[name] = 'not installed'
+        anchor = next((c for c in scene.components if getattr(c, 'nuclear', False) or c.name == 'nucleus'), None)
+        centroids = {}
+        for c in scene.components:
+            xy = np.array([self.values[f'{c.name}.morphology.{a}'] for a in ['x', 'y']])
+            offset = None if anchor is None else xy-np.array([self.values[f'{anchor.name}.morphology.{a}'] for a in ['x', 'y']])
+            centroids[c.name] = dict(reference_xy=xy, offset_reference_pixels=offset,
+                                     offset_anchor=None if anchor is None else anchor.name)
         data = dict(values=self.values, chi2=self.chi2, bic_like=self.bic_like,
+                    success=self.success, best_optimizer=self.best_optimizer, centroids=centroids,
                     n_pixels=self.n_pixels, n_parameters=self.n_parameters, multistart=self.runs,
                     projected_parameters=self.projected, uncertainty=self.uncertainty,
                     identifiability=self.identifiability, warnings=self.warnings,
                     context=asdict(scene.context), parameter_definitions={n: asdict(p) for n, p in scene.registry.parameters.items()},
-                    ties=scene.registry.ties, component_sed_classes={c.name: type(c.sed).__name__ for c in scene.components},
+                    ties=scene.registry.ties,
+                    component_definitions={c.name: dict(spatial=type(c).__name__,
+                        sed=c.sed.describe() if hasattr(c.sed, 'describe') else dict(model=type(c.sed).__name__))
+                        for c in scene.components},
+                    component_sed_classes={c.name: type(c.sed).__name__ for c in scene.components},
                     configuration=configuration, versions=versions,
                     observations={o.name: dict(band=o.band, psf=o.psf.qa(), provenance=o.provenance,
                                                affine_matrix=o.matrix, affine_offset=o.offset,

@@ -98,3 +98,14 @@ def test_wrong_sed_family_leaves_detectable_residuals(renderer):
     scene.add_component(clump('a', sed=ToyPopulation()))
     result = scene.fit(multistart=2)
     assert result.chi2/result.n_pixels > 3  # this smooth family cannot fit alternating colors
+
+
+def test_informative_prior_is_reported_as_prior_dominated(renderer):
+    obs = observations(('b', 'v'), noise=.05)
+    sed = ToyPopulation(.8, .3, 2.)
+    sed.parameters['age'] = Parameter(.8, .05, 4., prior=(.8, .001))
+    scene = Scene(obs, renderer=renderer)
+    scene.add_component(clump('a', sed=sed))
+    result = scene.fit(multistart=1)
+    assert result.identifiability['prior_information_fraction']['a.sed.age'] > .99
+    assert result.identifiability['data_rank'] < result.identifiability['rank']

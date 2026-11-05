@@ -41,6 +41,17 @@ synthetic sources with realistic median saved per-band noise. They include
 PSF-only, PSF+Sérsic, several clumps, overlap, compact sources, independent
 centroids, astrometry, interpolation and deliberate PSF mismatch.
 
+## Live FSPS validation
+
+[Live stellar CI](https://github.com/LittleLin1999/ChroMorph/actions/runs/42012960020)
+passed all three FSPS tests using downloaded public FSPS reference libraries.
+They verify process isolation, component-specific metallicity/dust changes,
+linear mass scaling, and joint age/dust/mass recovery for separated and
+overlapping components. These deliberately constrained simulations use six
+synthetic top-hat filters, known morphology, fixed independently chosen
+metallicities, and high S/N. They do **not** validate HST absolute throughputs
+or imply that J1042's four bands constrain the same quantities.
+
 ## Remaining science validation
 
 A/B/C configurations are provided. Actual production-renderer recovery must

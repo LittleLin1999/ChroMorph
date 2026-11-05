@@ -66,6 +66,8 @@ def example_configs(report):
 
 
 def observations_for(config):
+    if config.get('target', TARGET) not in ['J1042', TARGET]:
+        raise ValueError('The built-in discovery CLI currently supports J1042; use Observation/Scene for other targets')
     observations, report = discover_j1042(config['data_root'], metadata=config.get('metadata'))
     if report['blockers']:
         raise ValueError('Input QA failed: '+ '; '.join(report['blockers']))

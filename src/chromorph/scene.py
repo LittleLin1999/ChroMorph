@@ -19,6 +19,7 @@ class Scene:
         self.context = context or SEDContext()
         self.renderer = renderer
         self.components = []
+        self._basis_cache = {}
         self.registry = Registry()
         for index, o in enumerate(self.observations):
             identifier(o.name)
@@ -96,8 +97,20 @@ class Scene:
         result = {}
         for o in self.observations:
             shift = np.array([values[f"observation.{o.name}.{axis}"] for axis in ['dx', 'dy']])
-            result[o.name] = {c.name: self.renderer.render(c, self.morphology(c, values), o, shift)
-                              for c in self.components}
+            result[o.name] = {}
+            for c in self.components:
+                morphology = self.morphology(c, values)
+                key = (id(self.renderer), tuple(sorted(morphology.items())), tuple(shift),
+                       tuple(o.matrix.ravel()), tuple(o.offset), o.data.shape, id(o.psf),
+                       tuple(o.psf.center), o.psf.pixel_integrated)
+                cache_id = (o.name, c.name)
+                cached = self._basis_cache.get(cache_id)
+                if cached is None or cached[0] != key:
+                    image = np.asarray(self.renderer.render(c, morphology, o, shift), dtype=float)
+                    image.setflags(write=False)
+                    cached = (key, image)
+                    self._basis_cache[cache_id] = cached
+                result[o.name][c.name] = cached[1]
         return result
 
     def predict(self, values=None, *, basis=None):

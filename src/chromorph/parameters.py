@@ -19,6 +19,7 @@ class Parameter:
         if self.vary and self.lower >= self.upper:
             raise ValueError("A varying parameter needs distinct bounds")
         if self.prior is not None:
+            object.__setattr__(self, 'prior', tuple(self.prior))
             if len(self.prior) != 2 or not np.isfinite(self.prior).all() or self.prior[1] <= 0:
                 raise ValueError("Gaussian prior must have finite mean and positive sigma")
 
@@ -57,6 +58,12 @@ class Registry:
         self.ties[name] = target
         try:
             self.resolve(name)
+            for root in {self.resolve(n) for n in self.parameters}:
+                members = [p for n, p in self.parameters.items() if self.resolve(n) == root]
+                lo, hi = max(p.lower for p in members), min(p.upper for p in members)
+                p = self.parameters[root]
+                if lo > hi or not lo <= p.value <= hi or (p.vary and lo == hi):
+                    raise ValueError(f"Incompatible tied parameter bounds for {root}")
             self.bounds()
         except ValueError:
             self.ties = old

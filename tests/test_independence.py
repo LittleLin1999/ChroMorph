@@ -101,3 +101,94 @@ def test_registry_collision_and_invalid_parameter():
     r = Registry(); r.add('a', Parameter(1, 0, 2))
     with pytest.raises(ValueError): r.add('a', Parameter(1))
     with pytest.raises(ValueError): Parameter(2, 0, 1)
+
+
+def test_tie_to_fixed_root_respects_alias_bounds():
+    registry = Registry()
+    registry.add('fixed', Parameter(1., vary=False))
+    registry.add('alias', Parameter(2.5, 2., 3.))
+    with pytest.raises(ValueError, match='bounds'):
+        registry.tie('alias', 'fixed')
+    assert not registry.ties
+
+
+def test_mixed_free_and_population_seds_share_one_likelihood(renderer):
+    obs = observations(('b', 'v', 'r', 'i'))
+    scene = Scene(obs, renderer=renderer)
+    scene.add_component(clump('stellar', sed=ToyPopulation(.2, .1, 2)))
+    scene.add_component(clump('free', {'b': 1, 'v': 3, 'r': .1, 'i': 2}, x=17))
+    values = scene.registry.unpack()
+    model, images, fluxes = scene.predict(values)
+    for o in obs:
+        np.testing.assert_allclose(model[o.name], images[o.name]['stellar']+images[o.name]['free'])
+    assert 'stellar.sed.age' in values and 'free.flux.b' in values
+    assert 'free.sed.age' not in values
+
+
+def test_fsps_worker_configuration_change_restarts_state(monkeypatch):
+    import chromorph.sed as module
+    class Executor:
+        created = []
+        def __init__(self, **kwargs):
+            self.configuration = kwargs['initargs'][0]
+            self.closed = False
+            Executor.created.append(self)
+        def submit(self, function, params):
+            from concurrent.futures import Future
+            future = Future()
+            future.set_result((np.array([4000., 5000.]),
+                               np.full(2, self.configuration['dust_type']+1.), 1.))
+            return future
+        def shutdown(self, wait):
+            self.closed = True
+    monkeypatch.setattr(module, 'ProcessPoolExecutor', Executor)
+    sed = FSPSStellarSED()
+    params = dict(tage=1., logzsol=0., dust2=.2)
+    first = sed._spectrum(params)[1]
+    sed.configuration['dust_type'] = 4
+    second = sed._spectrum(params)[1]
+    assert Executor.created[0].closed and len(Executor.created) == 2
+    assert not np.array_equal(first, second)
+    sed.close()
+
+
+def test_stellar_flux_cache_includes_mass_context_and_throughput():
+    class Probe(FSPSStellarSED):
+        calls = 0
+        def _spectrum(self, parameters):
+            self.calls += 1
+            return np.array([4000., 5000.]), np.full(2, parameters['tage'])
+    class Band:
+        def __init__(self, scale):
+            self.scale = scale; self.fingerprint = str(scale)
+        def microjy(self, wavelength, flam):
+            return float(flam.sum()*self.scale)
+    obs = observations(); obs[0].throughput = Band(1.); obs[1].throughput = Band(2.)
+    sed = Probe(); scene = Scene(obs, context=SEDContext(distance_mpc=10))
+    scene.add_component(clump('a', sed=sed)); values = scene.registry.unpack()
+    first = sed.fluxes(values, 'a', obs, scene.context)
+    sed.fluxes(values, 'a', obs, scene.context)
+    assert sed.calls == 1
+    changed = dict(values); changed['a.sed.log_mass'] += 1
+    scaled = sed.fluxes(changed, 'a', obs, scene.context)
+    np.testing.assert_allclose(scaled['blue'], 10*first['blue'])
+    farther = sed.fluxes(values, 'a', obs, SEDContext(distance_mpc=20))
+    np.testing.assert_allclose(farther['blue'], first['blue']/4)
+    obs[0].throughput = Band(3.)
+    different_filter = sed.fluxes(values, 'a', obs, scene.context)
+    np.testing.assert_allclose(different_filter['blue'], 3*first['blue'])
+
+
+def test_spatial_cache_reuses_only_unchanged_component_morphology(renderer):
+    scene = Scene(observations(), renderer=renderer)
+    scene.add_component(clump('one', {'blue': 2, 'red': 1}, moving=True))
+    values = scene.registry.unpack()
+    initial = scene.predict(values)[1]
+    changed_sed = dict(values); changed_sed['one.flux.blue'] = 4
+    sed_images = scene.predict(changed_sed)[1]
+    np.testing.assert_allclose(sed_images['blue']['one'], 2*initial['blue']['one'])
+    shifted = dict(values); shifted['one.morphology.x'] += .5
+    shifted_images = scene.predict(shifted)[1]
+    assert not np.array_equal(initial['blue']['one'], shifted_images['blue']['one'])
+    # Returning to the old vector must recover the old basis exactly.
+    np.testing.assert_array_equal(scene.predict(values)[1]['blue']['one'], initial['blue']['one'])

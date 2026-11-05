@@ -115,7 +115,9 @@ claimed until the required renderer, physical libraries and recovery QA pass.
   normalization, centroid, area-equivalent FWHM, encircled energy and edge flux.
 - Optional variable projection solves eligible linear free-band amplitudes in
   one global NNLS. Stellar SEDs are evaluated inside every likelihood call.
-  Their mass normalization remains in the nonlinear global vector.
+  Their mass normalization remains in the nonlinear global vector. Spatial
+  bases and stellar fluxes are cached per component with their relevant
+  morphology, SED, source-context and throughput settings.
 - Backgrounds, registration, and relative calibration can be fitted. The first
   observation anchors calibration and registration gauges. Default nuisance
   settings are explicit in the configuration.
