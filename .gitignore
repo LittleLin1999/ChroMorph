@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+build/
+dist/
+results/
+*.fits
+docs/j1042_inventory.json
+examples/local_j1042/
+tests/data/j1042_empirical_v2_psfs.npz
+tests/data/j1042_empirical_v2_metadata.json

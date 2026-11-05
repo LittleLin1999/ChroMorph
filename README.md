@@ -85,8 +85,8 @@ chromorph validate examples/generated/A_free.yaml \
   --repeats 10 --output results/recovery_A.json
 ```
 
-The example configurations included here were generated from the available
-local mirror. Regenerate them for the Linux path before running there. Model B
+The checked-in example configurations contain illustrative starting values,
+not fitted J1042 measurements. Regenerate them against your actual data root. Model B
 uses a **separate** FSPS object for each extended component; Model C uses FSPS
 for two clumps and free-band SEDs for the remaining components. Edit component
 initial guesses, bounds, SFH, nebular choices and dust laws independently.
@@ -96,7 +96,7 @@ prior. Fits compare identical images, PSFs, masks and uncertainty maps.
 
 The loader verifies existing source/PSF hashes and uses the selected fit's
 stored data, masks, noise, sky and registration; WHT is not assumed to be a full
-variance model. See [data inventory](docs/j1042_inventory.json) and
+variance model. See [J1042 setup](docs/J1042_SETUP.md) and
 [validation status](docs/VALIDATION.md). No J1042 ChroMorph science fit is
 claimed until the required renderer, physical libraries and recovery QA pass.
 
