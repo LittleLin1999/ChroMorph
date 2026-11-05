@@ -119,8 +119,8 @@ def discover_j1042(root, *, metadata=None):
     return observations, report
 
 
-def attach_hst_throughputs(observations):
+def attach_hst_throughputs(observations, obsmodes=None):
     from .photometry import HSTThroughput
     for o in observations:
-        o.throughput = HSTThroughput('wfc3,uvis2,'+o.band.lower())
+        o.throughput = HSTThroughput((obsmodes or {}).get(o.band, 'wfc3,uvis2,'+o.band.lower()))
     return observations

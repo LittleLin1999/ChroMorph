@@ -15,6 +15,16 @@ This is an initial implementation, not a validated J1042 science result.
   `CHROMORPH_STELLAR_TESTS=1 pytest -m integration`, after installing libraries
   and HST reference data. They check independent live evaluators and spectra.
 
+## GitHub CI
+
+[Initial production-renderer CI](https://github.com/LittleLin1999/ChroMorph/actions/runs/42011897276)
+passed on Python 3.10 and 3.12: **25 passed, 2 skipped** per matrix job.
+Both source distribution and wheel builds passed. The additional four tests
+exercise actual GalSim rendering: empirical-kernel round trip/no extra pixel
+convolution, subpixel affine centroids, aperture losses, and joint moving
+clump plus independent nuclear-band recovery. These use synthetic PSFs.
+Local J1042 kernels remain unpublished pending data publication approval.
+
 ## Real-data discovery
 
 The requested `/home/linxiaojing/data/lrd-squared/hst` is not accessible from

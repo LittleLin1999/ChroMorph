@@ -19,7 +19,7 @@ class Parameter:
         if self.vary and self.lower >= self.upper:
             raise ValueError("A varying parameter needs distinct bounds")
         if self.prior is not None:
-            if not np.isfinite(self.prior).all() or self.prior[1] <= 0:
+            if len(self.prior) != 2 or not np.isfinite(self.prior).all() or self.prior[1] <= 0:
                 raise ValueError("Gaussian prior must have finite mean and positive sigma")
 
 

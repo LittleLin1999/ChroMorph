@@ -135,7 +135,10 @@ class FitResult:
                     ties=scene.registry.ties, component_sed_classes={c.name: type(c.sed).__name__ for c in scene.components},
                     configuration=configuration, versions=versions,
                     observations={o.name: dict(band=o.band, psf=o.psf.qa(), provenance=o.provenance,
-                                               affine_matrix=o.matrix, affine_offset=o.offset) for o in scene.observations})
+                                               affine_matrix=o.matrix, affine_offset=o.offset,
+                                               throughput=None if o.throughput is None else dict(
+                                                   obsmode=getattr(o.throughput, 'obsmode', None),
+                                                   fingerprint=getattr(o.throughput, 'fingerprint', None))) for o in scene.observations})
         (directory/'result.json').write_text(json.dumps(_json(data), indent=2, allow_nan=False)+'\n')
         Table(rows=[dict(parameter=n, value=self.values[n], error=self.uncertainty.get(scene.registry.resolve(n)))
                     for n in scene.registry.parameters]).write(directory/'parameters.ecsv', format='ascii.ecsv', overwrite=True)
@@ -156,6 +159,10 @@ class FitResult:
             for key, array in planes.items():
                 header = fits.Header() if o.header is None or key == 'PSF' else o.header.copy()
                 header['BUNIT'] = 'DIMENSIONLESS' if key in {'MASK', 'RESIDSIG', 'PSF'} else 'ELECTRONS/S'
+                if key == 'PSF':
+                    header['PSFCENX'], header['PSFCENY'] = o.psf.center
+                    header['PIXSCALE'] = o.psf.pixel_scale
+                    header['PIXINTEG'] = o.psf.pixel_integrated
                 hdus.append(fits.ImageHDU(np.asarray(array), header=header, name=f'{o.name}_{key}'))
         fits.HDUList(hdus).writeto(directory/'images.fits', overwrite=True, checksum=True)
         Table(rows=photometry).write(directory/'photometry.ecsv', format='ascii.ecsv', overwrite=True)

@@ -71,7 +71,7 @@ def observations_for(config):
         raise ValueError('Input QA failed: '+ '; '.join(report['blockers']))
     stellar = any(c['sed']['model'] == 'fsps' for c in config['components'])
     if stellar:
-        attach_hst_throughputs(observations)
+        attach_hst_throughputs(observations, config.get('throughputs'))
         if report['redshift'] is None and not config.get('context', {}).get('distance_mpc'):
             raise ValueError('Physical SED requires measured redshift or distance')
     context = dict(config.get('context', {}))

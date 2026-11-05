@@ -49,6 +49,8 @@ class EmpiricalPSF:
               for q in [.5, .8, .9, .95]}
         border = np.zeros_like(positive, dtype=bool)
         border[:2] = True; border[-2:] = True; border[:, :2] = True; border[:, -2:] = True
+        support_radius = float(radius[positive > positive.max()*1e-10].max())
+        support_edge = radius >= max(0., support_radius-2)
         # Area-equivalent half-maximum diameter, diagnostic for noncircular PSFs.
         fwhm = 2*np.sqrt(np.count_nonzero(positive >= positive.max()/2)/np.pi)*self.pixel_scale
         return dict(sum=float(self.image.sum()), centroid_pixels=centroid,
@@ -56,6 +58,8 @@ class EmpiricalPSF:
                     centroid_offset_pixels=float(np.linalg.norm(np.array(centroid)-self.center)),
                     fwhm_area_equivalent_arcsec=float(fwhm), encircled_energy_radii_arcsec=ee,
                     outer_two_pixel_positive_fraction=float(positive[border].sum()/total),
+                    outer_support_annulus_positive_fraction=float(positive[support_edge].sum()/total),
+                    positive_support_radius_pixels=support_radius,
                     negative_absolute_fraction=float(np.abs(self.image[self.image < 0]).sum()/total),
                     pixel_integrated=self.pixel_integrated, provenance=self.provenance)
 

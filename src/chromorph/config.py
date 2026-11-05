@@ -27,7 +27,7 @@ def load_config(path):
     if not isinstance(config, dict):
         raise ValueError("Configuration must be a YAML mapping")
     _keys(config, ['target', 'data_root', 'metadata', 'morphology', 'psf', 'context',
-                   'components', 'ties', 'centroid_groups', 'fitting'], 'top-level')
+                   'components', 'ties', 'centroid_groups', 'throughputs', 'fitting'], 'top-level')
     morphology = config.get('morphology', {})
     _keys(morphology, ['wavelength_mode', 'centroid_mode', 'renderer'], 'morphology')
     if morphology.get('wavelength_mode', 'constant') != 'constant' or morphology.get('renderer', 'galsim') != 'galsim':

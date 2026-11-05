@@ -14,3 +14,20 @@ jobs:
       - run: python -m pip install -e '.[test]'
       - run: pytest -ra
       - run: python -m build
+  stellar-physics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SPS_HOME: ${{ runner.temp }}/fsps
+      CHROMORPH_FSPS_TESTS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch public FSPS reference libraries
+        run: git clone --depth 1 https://github.com/cconroy20/fsps.git "$SPS_HOME"
+      - run: python -m pip install -e '.[test,stellar]'
+      - run: pytest -ra tests/test_fsps_physics.py
