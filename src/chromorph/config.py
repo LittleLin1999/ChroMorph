@@ -23,12 +23,22 @@ def parameter(spec):
                      spec.get('prior'))
 
 
+def validate_version(config):
+    version=config.get('schema_version',1)
+    if version not in {1,2}:raise ValueError('Unsupported configuration schema version '+str(version))
+    if config.get('execution') and version<2:raise ValueError('Execution policy options require schema_version: 2')
+    execution=config.get('execution',{})
+    _keys(execution,['rendering','compression_after'],'execution')
+    if execution.get('rendering','components') not in {'components','aggregate'}:raise ValueError('Unknown total rendering strategy')
+
+
 def load_config(path):
     config = yaml.safe_load(Path(path).read_text())
     if not isinstance(config, dict):
         raise ValueError("Configuration must be a YAML mapping")
     _keys(config, ['target', 'data_root', 'observations', 'metadata', 'morphology', 'psf', 'context',
-                   'components', 'ties', 'centroid_groups', 'throughputs', 'fitting', 'initial_values'], 'top-level')
+                   'components', 'ties', 'centroid_groups', 'throughputs', 'fitting', 'initial_values', 'schema_version', 'execution'], 'top-level')
+    validate_version(config)
     morphology = config.get('morphology', {})
     _keys(morphology, ['wavelength_mode', 'centroid_mode', 'renderer'], 'morphology')
     if morphology.get('wavelength_mode', 'constant') != 'constant' or morphology.get('renderer', 'galsim') != 'galsim':
@@ -52,11 +62,12 @@ def load_config(path):
 
 
 def build_scene(config, observations, *, renderer=None, context=None):
+    validate_version(config)
     fit = config.get('fitting', {})
     _keys(fit, ['optimizer', 'multistart', 'seed', 'max_nfev', 'variable_projection',
                 'background', 'registration', 'calibration', 'compare_sed_modes', 'workers',
                 'method', 'likelihood', 'project_stellar_mass', 'estimate_uncertainty',
-                'checkpoint_directory', 'tolerance', 'objective', 'allow_nuclear_flux_priors', 'sed_workers'], 'fitting')
+                'checkpoint_directory', 'tolerance', 'objective', 'allow_nuclear_flux_priors', 'sed_workers', 'jacobian', 'max_wall_seconds'], 'fitting')
     if fit.get('optimizer', 'scipy') not in {'scipy', 'trf', 'L-BFGS-B'}:
         raise ValueError('Use scipy, trf or L-BFGS-B for deterministic fitting')
     if fit.get('compare_sed_modes', False):
@@ -64,7 +75,7 @@ def build_scene(config, observations, *, renderer=None, context=None):
     scene = Scene(observations, context=context or SEDContext(**config.get('context', {})), renderer=renderer,
                   fit_background=fit.get('background', False), fit_registration=fit.get('registration', False),
                   fit_calibration=fit.get('calibration', False),
-                  allow_nuclear_flux_priors=fit.get('allow_nuclear_flux_priors',False),sed_workers=fit.get('sed_workers',1))
+                  allow_nuclear_flux_priors=fit.get('allow_nuclear_flux_priors',False),sed_workers=fit.get('sed_workers',1),execution_policy=config.get('execution'))
     try:
         for row in config['components']:
             _keys(row, ['name', 'spatial', 'nuclear', 'sed', 'parameters'], 'component')

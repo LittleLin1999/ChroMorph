@@ -98,6 +98,7 @@ class Observation:
     provenance: dict = field(default_factory=dict)
     covariance: object = None
     _likelihood_revision: int = field(default=0, init=False, repr=False)
+    _frozen_token: object = field(default=None, init=False, repr=False)
 
     def __post_init__(self):
         self.data = np.array(self.data, dtype=float, copy=True)
@@ -123,17 +124,36 @@ class Observation:
             raise ValueError("Science and empirical PSF pixel scales disagree")
 
     def likelihood_token(self):
-        return (self._likelihood_revision, id(self.data), id(self.sigma), id(self.mask), id(self.covariance), self.data.shape)
+        covariance = (self.covariance.cache_token() if hasattr(self.covariance, 'cache_token') else id(self.covariance))
+        return (self._likelihood_revision, id(self.data), id(self.sigma), id(self.mask), covariance, self.data.shape)
 
     def freeze(self):
         """Make fixed likelihood inputs immutable; use update() for changes."""
+        previous = {name: getattr(self, name) for name in ['data','sigma','mask','matrix','offset']}
         self.__post_init__()
-        for array in [self.data, self.sigma, self.mask]:
+        # Replacing data does not change a fixed mask/noise factorization.
+        # Compare only on explicit input updates, never in a proposal loop.
+        for name, old in previous.items():
+            current = getattr(self, name)
+            if (isinstance(old, np.ndarray) and not old.flags.writeable
+                    and old.shape == current.shape and np.array_equal(old, current, equal_nan=True)):
+                setattr(self, name, old)
+        for array in [self.data, self.sigma, self.mask, self.matrix, self.offset]:
             array.setflags(write=False)
         if isinstance(self.covariance, np.ndarray):
             from .noise import DenseCovariance
             self.covariance = DenseCovariance(self.covariance)
         self._likelihood_revision += 1
+        self._frozen_token = self.likelihood_token()
+
+    def noise_token(self):
+        covariance = (self.covariance.cache_token() if hasattr(self.covariance, 'cache_token') else id(self.covariance))
+        return (id(self.mask), self.mask.shape, id(self.sigma) if self.covariance is None else covariance)
+
+    def ensure_frozen(self):
+        """Prepare replacement arrays once; update() already freezes its inputs."""
+        if self._frozen_token != self.likelihood_token():
+            self.freeze()
 
     def update(self, **changes):
         unknown = set(changes)-{'data', 'sigma', 'mask', 'covariance'}

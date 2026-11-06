@@ -12,18 +12,7 @@ from .sed import FreeBandSED
 from .grouping import component_groups, grouped_images
 
 
-def _json(value):
-    if isinstance(value, np.ndarray):
-        return _json(value.tolist())
-    if isinstance(value, np.generic):
-        return _json(value.item())
-    if isinstance(value, float) and not np.isfinite(value):
-        return None
-    if isinstance(value, dict):
-        return {k: _json(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json(v) for v in value]
-    return value
+from .provenance import json_value as _json, RESULT_SCHEMA_VERSION, MODEL_SCHEMA_VERSION, model_signature
 
 
 class FitResult:
@@ -107,30 +96,8 @@ class FitResult:
                                    near_bounds=near, prior_information_fraction=dict(zip(names, fraction)))
 
     def sample(self, *, steps=1000, walkers=None, seed=0):
-        """Optional emcee posterior, retaining free nuclear band amplitudes."""
-        import emcee
-        names = self.scene.registry.names()
-        lo, hi = self.scene.registry.bounds(names)
-        center = np.array([self.values[n] for n in names])
-        ndim = len(names)
-        if ndim == 0:
-            raise ValueError("No varying parameters")
-        walkers = max(2*ndim+2, 32) if walkers is None else walkers
-        rng = np.random.default_rng(seed)
-        start = np.clip(center + rng.normal(size=(walkers, ndim))*1e-4*np.maximum(abs(center), 1), lo+1e-10, hi-1e-10)
-        def logp(x):
-            if not ((x >= lo).all() and (x <= hi).all()):
-                return -np.inf
-            try:
-                v = self.scene.registry.unpack(x, names)
-                r = self.scene.residual(v)
-                return -.5*float(r@r)
-            except ValueError:
-                return -np.inf
-        sampler = emcee.EnsembleSampler(walkers, ndim, logp)
-        sampler.random_state = np.random.RandomState(seed).get_state()
-        sampler.run_mcmc(start, steps, progress=False)
-        return sampler
+        from .inference import sample_emcee
+        return sample_emcee(self.scene,self.values,steps=steps,walkers=walkers,seed=seed)
 
     def write(self, directory, *, configuration=None):
         directory = Path(directory)
@@ -149,7 +116,9 @@ class FitResult:
             offset = None if anchor is None else xy-np.array([self.values[f'{anchor.name}.morphology.{a}'] for a in ['x', 'y']])
             centroids[c.name] = dict(reference_xy=xy, offset_reference_pixels=offset,
                                      offset_anchor=None if anchor is None else anchor.name)
-        data = dict(values=self.values, chi2=self.chi2, bic_like=self.bic_like,
+        data = dict(result_schema_version=RESULT_SCHEMA_VERSION,model_schema_version=MODEL_SCHEMA_VERSION,
+                    model_signature=model_signature(scene),density_parameterization='registered coordinates',
+                    values=self.values, chi2=self.chi2, bic_like=self.bic_like,
                     performance=getattr(self, 'performance', None),
                     success=self.success, best_optimizer=self.best_optimizer, centroids=centroids,
                     n_pixels=self.n_pixels, n_parameters=self.n_parameters, multistart=self.runs,

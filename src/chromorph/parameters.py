@@ -40,8 +40,50 @@ def identifier(name):
 
 class Registry:
     def __init__(self):
-        self.parameters = {}
-        self.ties = {}
+        from .layout import DefinitionDict
+        self._revision = 0
+        self._layout = None
+        self._parameters = DefinitionDict(changed=self._changed)
+        self._ties = DefinitionDict(changed=self._changed)
+
+    @property
+    def revision(self): return self._revision
+
+    def _changed(self):
+        self._revision += 1
+        self._layout = None
+
+    @property
+    def parameters(self): return self._parameters
+
+    @parameters.setter
+    def parameters(self, value):
+        from .layout import DefinitionDict
+        self._parameters = DefinitionDict(value, self._changed)
+        self._changed()
+
+    @property
+    def ties(self): return self._ties
+
+    @ties.setter
+    def ties(self, value):
+        from .layout import DefinitionDict
+        self._ties = DefinitionDict(value, self._changed)
+        self._changed()
+
+    @property
+    def layout(self):
+        from .layout import ParameterLayout
+        if self._layout is None: self._layout = ParameterLayout(self)
+        return self._layout
+
+    def __getstate__(self):
+        return dict(parameters=dict(self.parameters), ties=dict(self.ties))
+
+    def __setstate__(self, state):
+        self.__init__()
+        self.parameters = state.get('parameters',state.get('_parameters',{}))
+        self.ties = state.get('ties',state.get('_ties',{}))
 
     def add(self, name, parameter):
         if name in self.parameters:
@@ -78,60 +120,21 @@ class Registry:
             raise
 
     def names(self, exclude=()):
-        return [n for n, p in self.parameters.items()
-                if p.vary and n not in self.ties and n not in exclude]
+        excluded=set(exclude)
+        return [n for n in self.layout.independent_names if n not in excluded]
 
     def bounds(self, names=None):
-        names = self.names() if names is None else names
-        lower, upper = [], []
-        for name in names:
-            tied = [p for n, p in self.parameters.items() if self.resolve(n) == name]
-            lo, hi = max(p.lower for p in tied), min(p.upper for p in tied)
-            from .priors import prior_spec
-            specs=[prior_spec(p.prior) for p in tied if p.prior is not None]
-            if specs:
-                lo=max([lo]+[p.lower for p in specs]);hi=min([hi]+[p.upper for p in specs])
-                if any(p.distribution=='lognormal' for p in specs):lo=max(0.,lo)
-            if lo >= hi or not lo <= self.parameters[name].value <= hi:
-                raise ValueError(f"Incompatible bounds for tied parameter {name}")
-            lower.append(lo); upper.append(hi)
-        return np.array(lower), np.array(upper)
+        return self.layout.bounds(self.layout.independent_names if names is None else names)
 
     def initial(self, names=None):
         return np.array([self.parameters[n].value for n in (self.names() if names is None else names)])
 
-    def unpack(self, vector=None, names=None):
-        values = {n: p.value for n, p in self.parameters.items()}
-        if vector is not None:
-            names = self.names() if names is None else names
-            if len(vector) != len(names):
-                raise ValueError("Wrong parameter vector length")
-            values.update(zip(names, map(float, vector)))
-        for name in self.ties:
-            values[name] = values[self.resolve(name)]
-        return values
-
-    def prior_residuals(self, values):
-        from .priors import prior_for
-        names=[n for n,p in self.parameters.items() if n not in self.ties and p.vary and p.prior is not None]
-        if not names:return np.array([])
-        lo,hi=self.bounds(names)
-        return np.array([prior_for(self.parameters[n],a,b).residual(values[n]) for n,a,b in zip(names,lo,hi)])
-
-    def logprior(self, values):
-        from .priors import prior_for
-        names=self.names();lo,hi=self.bounds(names)
-        return float(sum(prior_for(self.parameters[n],a,b).logpdf(values[n]) for n,a,b in zip(names,lo,hi)))
+    def unpack(self, vector=None, names=None): return self.layout.unpack(vector,names)
+    def prior_residuals(self, values): return self.layout.prior_residuals(values)
+    def logprior(self, values): return self.layout.logprior(values)
 
     def cost_groups(self, names=None):
-        """Highest dependency cost wins for explicitly tied parameters."""
-        names=self.names() if names is None else names
-        def cost(n):
-            if '.morphology.' in n or n.endswith(('.dx','.dy')):return 0
-            if '.sed.' in n and not n.endswith('.log_mass'):return 1
-            return 2
+        names=self.layout.independent_names if names is None else names
         groups=[[],[],[]]
-        for n in names:
-            grade=min(cost(alias) for alias in self.parameters if self.resolve(alias)==n)
-            groups[grade].append(n)
+        for name in names: groups[self.layout.costs[name]].append(name)
         return dict(zip(['slow','medium','fast'],groups))

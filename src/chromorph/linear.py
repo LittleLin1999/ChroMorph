@@ -1,5 +1,7 @@
 """Bounded variable projection using whitened QR factors, never G^-1."""
+from __future__ import annotations
 from dataclasses import dataclass
+import time
 import numpy as np
 from scipy.optimize import lsq_linear
 from .sed import FreeBandSED, FSPSStellarSED
@@ -15,7 +17,7 @@ class LinearAmplitude:
 
 
 class LinearProjection:
-    def __init__(self, scene, *, stellar_mass=True, background=True):
+    def __init__(self, scene, *, stellar_mass=True, background=True, names=None, amplitudes=None):
         self.scene = scene
         registry = scene.registry
         linked = set(registry.ties) | set(registry.ties.values())
@@ -38,12 +40,16 @@ class LinearProjection:
                 p = registry.parameters[name]
                 if p.vary and p.prior is None and name not in linked:
                     self.amplitudes.append(LinearAmplitude(name, 'background', None, o.name))
+        if amplitudes is not None:self.amplitudes=list(amplitudes)
+        if names is not None:self.amplitudes=[a for a in self.amplitudes if a.name in set(names)]
         self.names = [a.name for a in self.amplitudes]
+        self.metrics = dict(solves=0, seconds=0.)
         self.last_diagnostics = {}
 
     def solve(self, values):
         if not self.amplitudes:
             return dict(values)
+        started=time.perf_counter()
         scene = self.scene
         engine = scene.compressed
         statistics = engine.statistics(values)
@@ -97,4 +103,6 @@ class LinearProjection:
         for amplitude, value in zip(self.amplitudes, fit.x/scale):
             result[amplitude.name] = (amplitude.reference_log_mass+np.log10(value)
                                       if amplitude.kind == 'mass' else float(value))
+        self.metrics['solves']+=1
+        self.metrics['seconds']+=time.perf_counter()-started
         return result

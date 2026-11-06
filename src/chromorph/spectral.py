@@ -5,7 +5,7 @@ from .sed import FSPSStellarSED
 
 class SpectralEngine:
     def __init__(self,scene,*,workers=1):
-        self.scene=scene;self.workers=int(workers);self._unit={};self.pool=None
+        self.scene=scene;self.workers=int(workers);self._unit={};self.pool=None;self.backends={};self._sources={}
         if self.workers<1:raise ValueError('Spectral workers must be positive')
         self.metrics=dict(shape_evaluations=0,parallel_batches=0)
 
@@ -15,13 +15,22 @@ class SpectralEngine:
         for component in scene.components:
             sed=component.sed
             if isinstance(sed,FSPSStellarSED) and type(sed).fluxes is FSPSStellarSED.fluxes:
-                key=(id(sed),sed._shape_key(values,component.name,scene.context),throughputs)
+                token=(id(sed),tuple(sorted(sed.configuration.items())),sed.sfh,sed.dust,sed.nebular,id(getattr(sed,'library',None)),getattr(sed,'experimental',None),getattr(sed,'fallback',None))
+                if self._sources.get(component.name)!=token:
+                    old=self.backends.pop(component.name,None)
+                    if old is not None:old.close()
+                    self.backends[component.name]=sed.prepared_copy();self._sources[component.name]=token
+                sed=self.backends[component.name]
+                if hasattr(sed,'library'):
+                    for o in scene.observations:o.ensure_frozen()
+                    sed._domain_authorized=sed.library.authorizes(values,component.name,scene.observations)
+                key=(id(sed),sed._shape_key(values,component.name,scene.context),throughputs,getattr(sed,'_domain_authorized',None))
                 previous=self._unit.get(component.name)
                 if previous is None or previous[0]!=key:pending.append((component,key))
             else:answers[component.name]=sed.fluxes(values,component.name,scene.observations,scene.context)
         def evaluate(item):
             c,key=item
-            return c.name,key,c.sed.unit_fluxes(values,c.name,scene.observations,scene.context)
+            return c.name,key,self.backends[c.name].unit_fluxes(values,c.name,scene.observations,scene.context)
         if len(pending)>1 and self.workers>1:
             if self.pool is None:self.pool=ThreadPoolExecutor(max_workers=self.workers)
             evaluated=self.pool.map(evaluate,pending);self.metrics['parallel_batches']+=1
@@ -33,4 +42,5 @@ class SpectralEngine:
 
     def close(self):
         if self.pool is not None:self.pool.shutdown(wait=True);self.pool=None
-        self._unit.clear()
+        for backend in self.backends.values():backend.close()
+        self.backends.clear();self._sources.clear();self._unit.clear()

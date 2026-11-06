@@ -64,7 +64,7 @@ def example_configs(report):
 def fit_options(config):
     options = config.get('fitting', {})
     allowed = ['multistart', 'seed', 'max_nfev', 'variable_projection', 'workers',
-               'likelihood', 'project_stellar_mass', 'estimate_uncertainty', 'checkpoint_directory', 'tolerance', 'objective']
+               'likelihood', 'project_stellar_mass', 'estimate_uncertainty', 'checkpoint_directory', 'tolerance', 'objective', 'jacobian', 'max_wall_seconds']
     result = {key: options[key] for key in allowed if key in options}
     method = options.get('optimizer', 'scipy')
     result['optimizer'] = options.get('method', 'trf') if method == 'scipy' else method

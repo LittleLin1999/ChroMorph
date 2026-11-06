@@ -1,4 +1,5 @@
 """Fixed Gaussian whitening and normalization, without covariance inversion."""
+from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 from scipy.linalg import cholesky, solve_triangular
@@ -46,6 +47,13 @@ class DenseCovariance:
         self.matrix = np.array(matrix, dtype=float, copy=True)
         self.matrix.setflags(write=False)
 
+    def cache_token(self):
+        # Replacement is explicit; in-place writes are forbidden by the array.
+        if self.matrix.flags.writeable:
+            self.matrix = np.array(self.matrix, dtype=float, copy=True)
+            self.matrix.setflags(write=False)
+        return (id(self), id(self.matrix), self.matrix.shape)
+
     def for_mask(self, mask):
         if self.matrix.shape != (mask.size, mask.size):
             raise ValueError('Dense covariance must use the full flattened image order')
@@ -64,6 +72,7 @@ class FixedWhiteningOperator:
     operator: object
     logdet_covariance: float
     mask_indices: tuple
+    signature: str | None = None
 
     def for_mask(self, mask):
         if tuple(np.flatnonzero(mask.ravel())) != tuple(self.mask_indices):

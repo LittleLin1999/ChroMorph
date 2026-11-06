@@ -12,7 +12,7 @@ from .spatial import PointSource
 class Scene:
     def __init__(self, observations, *, context=None, renderer=None,
                  fit_background=False, fit_registration=False, fit_calibration=False,
-                 cache_bytes=256*1024**2, allow_nuclear_flux_priors=False, sed_workers=1):
+                 cache_bytes=256*1024**2, allow_nuclear_flux_priors=False, sed_workers=1, execution_policy=None):
         self.observations = tuple(observations)
         if not self.observations or len({o.name for o in self.observations}) != len(self.observations):
             raise ValueError("Need observations with distinct names")
@@ -21,6 +21,7 @@ class Scene:
         # always allowed and never specify a nuclear spectral shape.
         self.allow_nuclear_flux_priors = bool(allow_nuclear_flux_priors)
         self.sed_workers=int(sed_workers)
+        self.policy_options = dict(execution_policy or {})
         self._renderer = renderer
         self.cache_bytes = int(cache_bytes)
         self._evaluator = None

@@ -83,7 +83,15 @@ class CompressedGaussianLikelihood:
         self._statistics = ExactLRU(8*1024**2)
         self._states = ExactLRU(state_cache_bytes)
         self.metrics = dict(statistics_builds=0, likelihood_calls=0, statistics_seconds=0.,
-            full_factorizations=0, rank_updates=0, gram_columns_updated=0, whitened_columns=0)
+            full_factorizations=0,qr_build_seconds=0.,qr_update_seconds=0., rank_updates=0, gram_columns_updated=0, whitened_columns=0)
+
+    def available(self, values):
+        """Query existing sufficient statistics without constructing any columns."""
+        for o in self.scene.observations:
+            fixed=self.scene.gaussian_data(o)
+            spatial=tuple(self.scene.spatial_key(c,o,values) for c in self.scene.components)
+            if self._statistics.get((o.name,fixed.token,spatial)) is None:return False
+        return True
 
     def statistics(self, values):
         scene = self.scene
@@ -108,8 +116,9 @@ class CompressedGaussianLikelihood:
                 if can_update:
                     design = state.design.copy();q = state.q; r = state.statistics.R
                     gram = state.statistics.G.copy();rhs = state.statistics.h.copy()
+                    update_started=time.perf_counter()
                     for j in changed:
-                        column = fixed.whitening.whiten(basis[scene.components[j].name][observation.mask])
+                        column = scene.whiten(observation,basis[scene.components[j].name][observation.mask])
                         if not np.isfinite(column).all():raise ValueError('Nonfinite spatial template')
                         direction = np.zeros(design.shape[1]);direction[j]=1.
                         q,r = qr_update(q,r,column-design[:,j],direction,check_finite=False)
@@ -117,15 +126,18 @@ class CompressedGaussianLikelihood:
                         rhs[j] = column@fixed.target
                     for j in changed:
                         gram[:,j] = design.T@design[:,j];gram[j,:] = gram[:,j]
+                    self.metrics['qr_update_seconds'] += time.perf_counter()-update_started
                     self.metrics['rank_updates'] += len(changed)
                     self.metrics['gram_columns_updated'] += len(changed)
                     self.metrics['whitened_columns'] += len(changed)
                 else:
                     templates = np.stack([basis[c.name][observation.mask] for c in scene.components]
                                          +[np.ones(observation.mask.sum())],axis=1)
-                    design = fixed.whitening.whiten(templates)
+                    design = scene.whiten(observation,templates)
                     if not np.isfinite(design).all():raise ValueError('Nonfinite spatial templates')
+                    qr_started=time.perf_counter()
                     q,r = qr(design,mode='economic',check_finite=False)
+                    self.metrics['qr_build_seconds'] += time.perf_counter()-qr_started
                     gram = design.T@design;rhs = design.T@fixed.target
                     self.metrics['full_factorizations'] += 1
                     self.metrics['whitened_columns'] += design.shape[1]

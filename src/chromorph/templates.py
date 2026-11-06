@@ -8,6 +8,9 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.integrate import cumulative_trapezoid
 from .sed import FSPSStellarSED
 from .parameters import Parameter
+from .cache import ExactLRU
+
+_LOADED_LIBRARIES=ExactLRU(256*1024**2,max_entries=4)
 
 
 def observational_signature(observations,context):
@@ -32,6 +35,17 @@ def _reference_metadata(reference,values,name,observations,context,axes,elapsed)
     return metadata
 
 
+class FrozenDict(dict):
+    """JSON-compatible immutable metadata, including nested physical settings."""
+    def __init__(self,value):
+        dict.__init__(self,((k,FrozenDict(v) if isinstance(v,dict) else
+            tuple(FrozenDict(x) if isinstance(x,dict) else x for x in v) if isinstance(v,list) else v)
+            for k,v in value.items()))
+    def _immutable(self,*args,**kwargs):raise TypeError('Template metadata is immutable; use validate() to replace its report')
+    __setitem__=__delitem__=clear=pop=popitem=setdefault=update=__ior__=_immutable
+    def __reduce__(self):return (FrozenDict,(dict(self),))
+
+
 class BandFluxLibrary:
     """Full filter-integrated spectra; no effective-wavelength dust shortcut.
 
@@ -40,8 +54,8 @@ class BandFluxLibrary:
     Log-age is an interpolation coordinate, never a stellar-mass coordinate.
     """
     def __init__(self,axes,flux,metadata):
-        self.axes={k:np.array(v,dtype=float,copy=True) for k,v in axes.items()}
-        self.flux=np.array(flux,dtype=float,copy=True);self.metadata=dict(metadata)
+        self.axes=FrozenDict({k:np.array(v,dtype=float,copy=True) for k,v in axes.items()})
+        self.flux=np.array(flux,dtype=float,copy=True);self.metadata=FrozenDict(metadata)
         expected=tuple(len(a) for a in self.axes.values())+(len(metadata['bands']),)
         if self.flux.shape!=expected or not np.isfinite(self.flux).all() or np.any(self.flux<=0):
             raise ValueError('Invalid positive band-flux grid')
@@ -50,6 +64,9 @@ class BandFluxLibrary:
             a.setflags(write=False)
         self.flux.setflags(write=False)
         self._interpolator=RegularGridInterpolator(tuple(self.axes.values()),np.log(self.flux),bounds_error=True)
+        from .provenance import content_signature,array_signature
+        self.fingerprint=content_signature(dict(axes={k:array_signature(v) for k,v in self.axes.items()},
+            flux=array_signature(self.flux),metadata={k:v for k,v in self.metadata.items() if k not in {'validation','build_seconds'}}))
         self.kind='composite'
 
     @classmethod
@@ -66,6 +83,22 @@ class BandFluxLibrary:
         metadata=_reference_metadata(reference,values,name,observations,context,axes,time.perf_counter()-started)
         return cls(axes,flux,metadata)
 
+    def authorizes(self,values,name,observations):
+        """Explicit finite-tested image/noise and normalization domain."""
+        from .provenance import observation_signature
+        domain=(self.metadata.get('validation') or {}).get('validation_domain') or {}
+        if tuple(domain.get('observation_signatures',()))!=tuple(observation_signature(o) for o in observations):return False
+        scene_bounds=domain.get('scene_parameter_bounds',{})
+        if not set(values).issubset(scene_bounds):return False
+        def within(x,bounds):
+            lo,hi=bounds
+            return (-np.inf if lo is None else lo)<=x<=(np.inf if hi is None else hi)
+        if not all(within(values[k],bounds) for k,bounds in scene_bounds.items()):return False
+        bounds=domain.get('parameter_bounds',{})
+        required=['sed.log_mass']+['morphology.'+k for k in ['x','y','re','n','q','pa']]
+        if not all(k in bounds for k in required):return False
+        return all(np.isfinite(values[name+'.'+k]) and within(values[name+'.'+k],interval) for k,interval in bounds.items())
+
     def coordinates(self,shape):
         return [np.log10(shape['age']) if k=='log_age' else shape[k] for k in self.axes]
 
@@ -75,13 +108,16 @@ class BandFluxLibrary:
         return np.exp(self._interpolator(np.array(self.coordinates(shape)))[0])
 
     def validate(self,reference,values,name,observations,context,points,*,relative_tolerance=1e-3,
-                 likelihood_error=None,delta_chi2_tolerance=.01):
+                 likelihood_error=None,delta_chi2_tolerance=.01,loglikelihood_error=None,
+                 delta_loglikelihood_tolerance=.005,validation_domain=None):
         """Check off-grid reference calls; image-noise validation is explicit.
 
         `likelihood_error(predicted,reference,shape)` must bound the image-level
         delta-chi2 for the intended normalization/morphology domain. Without
         this additional gate the library stays experimental for inference.
         """
+        if likelihood_error is not None and loglikelihood_error is not None:
+            raise ValueError('Choose a nonnegative chi2 bound or signed loglikelihood discrepancy')
         rows=[]
         for shape in points:
             v=dict(values)
@@ -89,28 +125,51 @@ class BandFluxLibrary:
             full_shape={k:v[name+'.sed.'+k] for k in reference.parameters if k!='log_mass'}
             exact=reference.unit_fluxes(v,name,observations,context)
             truth=np.array([exact[b] for b in self.metadata['bands']]);predicted=self.predict(full_shape)
+            bound=None if likelihood_error is None else float(likelihood_error(predicted,truth,full_shape))
+            signed=None if loglikelihood_error is None else float(loglikelihood_error(predicted,truth,full_shape))
+            if bound is not None and (not np.isfinite(bound) or bound<0):
+                raise ValueError('likelihood_error must return a finite nonnegative chi2 error bound')
+            if signed is not None and not np.isfinite(signed):
+                raise ValueError('Nonfinite signed loglikelihood discrepancy')
             rows.append(dict(shape=full_shape,relative_error=(predicted/truth-1).tolist(),
-                delta_chi2=None if likelihood_error is None else float(likelihood_error(predicted,truth,full_shape))))
+                delta_chi2=bound,delta_loglikelihood=signed))
         maximum=max((max(abs(np.array(r['relative_error']))) for r in rows),default=np.inf)
         worst=max((r['delta_chi2'] for r in rows if r['delta_chi2'] is not None),default=None)
-        passed=bool(rows and maximum<=relative_tolerance and worst is not None and worst<=delta_chi2_tolerance)
+        worst_signed=max((abs(r['delta_loglikelihood']) for r in rows if r['delta_loglikelihood'] is not None),default=None)
+        image_passed=(worst is not None and worst<=delta_chi2_tolerance) or (worst_signed is not None and worst_signed<=delta_loglikelihood_tolerance)
+        passed=bool(rows and np.isfinite(maximum) and maximum<=relative_tolerance and image_passed and validation_domain)
+
         report=dict(production_ready=passed,photometry_passed=bool(maximum<=relative_tolerance),
             maximum_relative_error=float(maximum),relative_tolerance=relative_tolerance,maximum_delta_chi2=worst,
             delta_chi2_tolerance=delta_chi2_tolerance,finite_validation_is_not_a_proof_over_the_whole_prior=True,
-            image_domain_validation_supplied=likelihood_error is not None,points=rows)
-        self.metadata['validation']=report
+            image_domain_validation_supplied=likelihood_error is not None or loglikelihood_error is not None,
+            maximum_absolute_delta_loglikelihood=worst_signed,delta_loglikelihood_tolerance=delta_loglikelihood_tolerance,
+            validation_domain=validation_domain,points=rows)
+        self.metadata=FrozenDict({**self.metadata,'validation':report})
         return report
 
     def save(self,path):
         payload={"axis_"+k:v for k,v in self.axes.items()}
-        np.savez_compressed(path,flux=self.flux,metadata=json.dumps(__import__('chromorph.result',fromlist=['_json'])._json(self.metadata),sort_keys=True,allow_nan=False),
+        np.savez_compressed(path,flux=self.flux,metadata=json.dumps(__import__('chromorph.provenance',fromlist=['json_value']).json_value(self.metadata),sort_keys=True,allow_nan=False),
             axis_names=np.array(list(self.axes)),kind=self.kind,**payload)
+
+    @property
+    def nbytes(self):
+        # Include log-flux interpolation storage and SSP cumulative arrays.
+        total=2*self.flux.nbytes+sum(a.nbytes for a in self.axes.values())
+        if hasattr(self,'_integral'):total+=self._integral.nbytes
+        return total
 
     @classmethod
     def load(cls,path):
+        path=Path(path).resolve();stat=path.stat();key=(str(path),stat.st_mtime_ns,stat.st_size)
+        cached=_LOADED_LIBRARIES.get(key)
+        if cached is not None:return cached
         with np.load(path,allow_pickle=False) as z:
             kind=str(z['kind']);typ=SSPBandLibrary if kind=='ssp_integral' else cls
-            return typ({str(k):z['axis_'+str(k)] for k in z['axis_names']},z['flux'],json.loads(str(z['metadata'])))
+            result=typ({str(k):z['axis_'+str(k)] for k in z['axis_names']},z['flux'],json.loads(str(z['metadata'])))
+        _LOADED_LIBRARIES[key]=result
+        return result
 
 
 class SSPBandLibrary(BandFluxLibrary):
@@ -202,23 +261,38 @@ class PrecomputedFSPSSED(FSPSStellarSED):
         if fallback not in {'reference','raise'}:raise ValueError('Unknown fallback policy')
         definition=library.metadata['reference']
         sfh='constant' if library.kind=='ssp_integral' else definition['sfh']
+        restored={}
+        for key,row in definition.get('parameters',{}).items():
+            row=dict(row)
+            if row.get('lower') is None:row['lower']=-np.inf
+            if row.get('upper') is None:row['upper']=np.inf
+            restored[key]=Parameter(**row)
+        restored.update(parameters or {})
         super().__init__(sfh=sfh,nebular=definition['nebular'],dust=definition['dust'],
-            dust_type=definition['configuration']['dust_type'],parameters=parameters)
+            dust_type=definition['configuration']['dust_type'],parameters=restored)
+        self.configuration.update(definition['configuration'])
+        if library.kind=='ssp_integral':
+            self.configuration.update(sfh=1,const=1.,fburst=0.,sf_start=0.,sf_trunc=0.)
         self.metrics.update(template_calls=0,reference_fallbacks=0)
 
     def _shape_key(self,values,name,context):
         return (super()._shape_key(values,name,context),id(self.library),self.experimental,self.fallback,
-                getattr(self,'method',None),id(self.library.metadata.get('validation')))
+                getattr(self,'method',None),id(self.library.metadata.get('validation')),getattr(self,'_domain_authorized',False))
 
     def describe(self):
         result=super().describe();result.update(backend='precomputed_fsps',library_kind=self.library.kind,
-            experimental=self.experimental,validation=self.library.metadata.get('validation'))
+            experimental=self.experimental,library_fingerprint=self.library.fingerprint,validation=self.library.metadata.get('validation'))
         return result
 
     def unit_fluxes(self,values,name,observations,context):
         try:
             validation=self.library.metadata.get('validation') or {}
             if not self.experimental and not validation.get('production_ready'):raise ValueError('Template accuracy gate not passed')
+            # An SED-only query cannot certify an image/mass/morphology domain.
+            # The evaluator explicitly authorizes a validated domain; standalone
+            # queries remain reference-only unless experimental=True.
+            if not self.experimental and not getattr(self,'_domain_authorized',False):
+                raise ValueError('Template image-domain authorization is absent')
             current=observational_signature(observations,context)
             # JSON normalizes tuple/list representation after library round trips.
             if json.dumps(current,sort_keys=True)!=json.dumps(self.library.metadata['signature'],sort_keys=True):
@@ -236,3 +310,24 @@ class PrecomputedFSPSSED(FSPSStellarSED):
             if self.fallback=='raise':raise
             self.metrics['reference_fallbacks']+=1
             return super().unit_fluxes(values,name,observations,context)
+
+
+def image_loglikelihood_discrepancy(scene,values,component_name,predicted,reference,bands):
+    """Signed exact Gaussian discrepancy for one held-out table query.
+
+    Inputs are band fluxes per formed solar mass. Other components remain in
+    the reference full image; covariance whitening is the prepared reference.
+    This validation helper is never called by the proposal hot path.
+    """
+    evaluator=scene.prepare();models,_,fluxes=scene.predict(values)
+    mass=10**values[component_name+'.sed.log_mass'];predicted=dict(zip(bands,predicted));reference=dict(zip(bands,reference))
+    total=0.
+    for o in scene.observations:
+        calibration=np.exp(values['observation.'+o.name+'.log_calibration'])/o.ujy_per_rate
+        unit=evaluator.unit_template(evaluator.component_named(component_name),o,values)*calibration
+        reference_image=models[o.name]+(mass*reference[o.band]-fluxes[component_name][o.band])*unit
+        delta=mass*(predicted[o.band]-reference[o.band])*unit
+        residual=evaluator.whitened_residual(o,reference_image)
+        whitened=evaluator.whiten(o,delta[o.mask])
+        total+=float(residual@whitened-.5*(whitened@whitened))
+    return total

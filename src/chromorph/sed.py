@@ -155,6 +155,17 @@ class FSPSStellarSED:
         self._flux_cache = ExactLRU(self.cache_bytes//3, self.cache_size)
         self.metrics = dict(fsps_calls=0, photometry_calls=0)
 
+    def prepared_copy(self):
+        """Process-local execution state; immutable libraries may be shared."""
+        from copy import copy
+        other=copy(self)
+        other.parameters=dict(self.parameters);other.configuration=dict(self.configuration)
+        other._executor=None;other._executor_configuration=None
+        for name in ['_cache','_observed_cache','_flux_cache']:
+            setattr(other,name,getattr(self,name).empty_like())
+        other.metrics={key:0 for key in self.metrics}
+        return other
+
     def describe(self):
         return dict(model='fsps', sfh=self.sfh, nebular=self.nebular, dust=self.dust,
                     configuration=dict(self.configuration), mass_definition='formed_solar_mass',
@@ -186,11 +197,14 @@ class FSPSStellarSED:
             self._executor_configuration = configuration_key
 
     def _spectrum(self, parameters):
+        import time
         key = tuple(sorted(parameters.items())) + tuple(sorted(self.configuration.items()))
         cached = self._cache.get(key)
         if cached is None:
             self._ensure_executor()
+            started=time.perf_counter()
             wave, spec, formed_mass = self._executor.submit(_evaluate_fsps, dict(parameters)).result()
+            self.metrics['fsps_ipc_seconds']=self.metrics.get('fsps_ipc_seconds',0.)+time.perf_counter()-started
             self.metrics['fsps_calls'] += 1
             if formed_mass <= 0 or not np.isfinite(spec).all():
                 raise ValueError("FSPS returned invalid spectrum/mass")

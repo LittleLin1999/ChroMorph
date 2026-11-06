@@ -116,3 +116,27 @@ model's evidence, not convergence for an arbitrary multi-clump galaxy.
 
 Reference: the public [PolyChordLite example](https://github.com/PolyChord/PolyChordLite/blob/master/run_pypolychord.py)
 keeps the normalized likelihood and unit-cube prior transform separate.
+
+
+## Stored conditional quantities and versioned posterior files
+
+Posterior schema 2 stores two PolyChord derived columns per analytically
+integrated nuclear band: `<parameter>.conditional_location` and
+`<parameter>.conditional_scale`. These are the UNTRUNCATED Gaussian location
+and standard deviation in microJy, defining the conditional truncated at zero.
+They are neither its truncated moments nor additional sampled dimensions.
+The sampled/derived column order and statistical mode are persisted in the
+checkpoint signature. Observations of one filter are combined before its shared
+amplitude is integrated; unsupported coupled nuclear integrals are rejected.
+
+SavedPosterior.read(...).restore(sampler, count=..., seed=...) resamples with
+the original posterior weights and draws one conditional flux per retained
+state. Stored quantities preserve morphology/SED correlations without replay,
+GalSim or FSPS work. Older files lacking derived columns require explicit
+allow_legacy_replay=True and matching original inputs/model. Changed scientific
+settings or column schemas must use a new checkpoint directory.
+
+Zero remaining sampled dimensions use the exact analytic conditional directly,
+without invoking a nested sampler. Improper-flat outputs still have null
+absolute evidence. Proper independent nuclear priors continue to be explicitly
+sampled and retain evidence; no arbitrary cap or half-normal is introduced.
