@@ -141,6 +141,7 @@ class FitResult:
             centroids[c.name] = dict(reference_xy=xy, offset_reference_pixels=offset,
                                      offset_anchor=None if anchor is None else anchor.name)
         data = dict(values=self.values, chi2=self.chi2, bic_like=self.bic_like,
+                    performance=getattr(self, 'performance', None),
                     success=self.success, best_optimizer=self.best_optimizer, centroids=centroids,
                     n_pixels=self.n_pixels, n_parameters=self.n_parameters, multistart=self.runs,
                     projected_parameters=self.projected, uncertainty=self.uncertainty,
@@ -212,18 +213,11 @@ class FitResult:
                     shown = ax.imshow(np.arcsinh(image/scale), origin='lower', vmin=-1, vmax=top, cmap='magma')
                 ax.set_title(o.name+' '+title); fig.colorbar(shown, ax=ax, fraction=.046)
         fig.savefig(directory/'diagnostic.png', dpi=160); fig.savefig(directory/'diagnostic.pdf'); plt.close(fig)
-        fig, ax = plt.subplots(figsize=(9, 5.5), layout='constrained')
-        observed = sorted({o.band: o for o in scene.observations}.values(), key=lambda o: o.pivot_angstrom or self.scene.bands.index(o.band)+1)
-        waves = np.array([o.pivot_angstrom or (self.scene.bands.index(o.band)+1)*1e4 for o in observed])/1e4
-        colors = plt.cm.tab10(np.linspace(0, .9, max(len(scene.components), 2)))
-        for index, c in enumerate(scene.components):
-            flux = [self.fluxes[c.name][o.band] for o in observed]
-            # Free-band points are NEVER joined into an assumed nuclear spectrum.
-            ax.plot(waves, flux, linestyle='none', marker=['o', 's', '^', 'v', 'D', 'P'][index % 6], color=colors[index], label=c.name+' ('+type(c.sed).__name__+')')
-            if not isinstance(c.sed, FreeBandSED) and hasattr(c.sed, 'spectrum'):
-                w, flam = c.sed.spectrum(self.values, c.name, scene.context)
-                fnu = flam*w**2/2.99792458e18*1e29
-                ax.plot(w/1e4, fnu, color=colors[index], lw=.8)
-        ax.plot(waves, [sum(self.fluxes[c.name][o.band] for c in scene.components) for o in observed], 'k*', ms=10, label='Total predicted photometry')
-        ax.set(xscale='log', yscale='log', xlabel='Observed wavelength (µm)', ylabel='Flux density (µJy)', xlim=(waves.min()*.85, waves.max()*1.15))
-        ax.legend(fontsize=8); fig.savefig(directory/'sed.png', dpi=180); fig.savefig(directory/'sed.pdf'); plt.close(fig)
+        self.plot_sed(directory)
+
+    def plot_sed(self, directory, **options):
+        """Regenerate only the SED display; never refit or overwrite fit values."""
+        from .plotting import plot_component_sed
+        import matplotlib.pyplot as plt
+        fig = plot_component_sed(self, directory, **options)
+        plt.close(fig)

@@ -49,3 +49,14 @@ def test_galsim_joint_moving_clump_and_nucleus_recovery():
     result = fit.fit(multistart=2, max_nfev=100)
     np.testing.assert_allclose(list(result.fluxes['a'].values()), [3., .4], atol=.08)
     np.testing.assert_allclose([result.values['nucleus.morphology.x'], result.values['nucleus.morphology.y']], [15.2, 15.4], atol=.05)
+
+
+def test_gaussian_index_machine_precision_limit():
+    renderer = GalSimRenderer()
+    obs = observations(size=41)[0]
+    component = Sersic('a', FreeBandSED())
+    morphology = dict(x=20., y=20., re=7.9, n=.5, q=.15, pa=81.6)
+    exact = renderer.render(component, morphology, obs)
+    morphology['n'] = .5000000000002432
+    nearby = renderer.render(component, morphology, obs)
+    np.testing.assert_allclose(nearby, exact, rtol=1e-9, atol=1e-12)

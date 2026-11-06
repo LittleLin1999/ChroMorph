@@ -8,3 +8,5 @@ from .spatial import PointSource, Sersic
 __version__ = "0.1.0"
 __all__ = ['Scene', 'Observation', 'EmpiricalPSF', 'Parameter', 'FreeBandSED',
            'FSPSStellarSED', 'SEDContext', 'PointSource', 'Sersic']
+
+from .io import load_observations

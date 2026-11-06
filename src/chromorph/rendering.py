@@ -4,20 +4,31 @@ from .spatial import PointSource
 
 
 class GalSimRenderer:
-    def __init__(self, interpolation_order=5, maximum_fft_size=16384):
+    def __init__(self, interpolation_order=5, maximum_fft_size=16384,
+                 folding_threshold=1e-4, maxk_threshold=1e-5):
         try:
             import galsim
         except ImportError as exc:
             raise ImportError("GalSim is required for spatial rendering; install chromorph dependencies") from exc
         self.gs = galsim
         self.interpolation_order = interpolation_order
+        self.configuration = dict(interpolation_order=interpolation_order,
+                                  maximum_fft_size=maximum_fft_size,
+                                  folding_threshold=folding_threshold, maxk_threshold=maxk_threshold)
         self.gsparams = galsim.GSParams(maximum_fft_size=maximum_fft_size,
-                                       folding_threshold=1e-4, maxk_threshold=1e-5)
+                                       folding_threshold=folding_threshold, maxk_threshold=maxk_threshold)
         self._psfs = {}
+
+    def __reduce__(self):
+        return (_rebuild_renderer, (self.configuration,))
+
+    def cache_token(self):
+        return (type(self).__name__, repr(self.gsparams), self.interpolation_order)
 
     def _psf(self, observation):
         # Observation/PSF instances are kept alive by Scene; identity is stable.
-        key = id(observation.psf)
+        p = observation.psf
+        key = (p.cache_token(), repr(self.gsparams), self.interpolation_order)
         if key not in self._psfs:
             psf = observation.psf
             image = self.gs.ImageD(np.array(psf.image, copy=True), scale=1.0)
@@ -38,7 +49,11 @@ class GalSimRenderer:
             obj = psf
         else:
             # GalSim shear preserves circularized radius; API re is semimajor.
-            intrinsic = gs.Sersic(n=morphology['n'],
+            # GalSim 2.8.5 can fail stepK bracketing for n infinitesimally
+            # above 0.5. Use its exact Gaussian-index limit within 1e-10,
+            # far below the rendering and finite-difference tolerances.
+            index = .5 if abs(morphology['n']-.5) < 1e-10 else morphology['n']
+            intrinsic = gs.Sersic(n=index,
                                   half_light_radius=morphology['re']*np.sqrt(morphology['q']),
                                   flux=1.0, gsparams=self.gsparams)
             intrinsic = intrinsic.shear(q=morphology['q'], beta=morphology['pa']*gs.degrees)
@@ -70,3 +85,7 @@ class GalSimRenderer:
         return dict(same_grid_relative_l2=relative, same_grid_sum=float(rendered.sum()),
                     half_pixel_sum=float(shifted.sum()), method="no_pixel" if psf.pixel_integrated else "auto",
                     pass_same_grid=relative < .01)
+
+
+def _rebuild_renderer(configuration):
+    return GalSimRenderer(**configuration)

@@ -1,0 +1,144 @@
+# Illustrative configuration; regenerate against validated target data.
+target: example
+observations: observations.yaml
+morphology:
+  wavelength_mode: constant
+  centroid_mode: independent
+  renderer: galsim
+psf:
+  source: empirical_v2
+  already_drizzled: true
+components:
+- name: nucleus
+  spatial: point
+  nuclear: true
+  sed:
+    model: free
+  parameters:
+    x:
+      value: 50
+      min: 45
+      max: 55
+    y:
+      value: 50
+      min: 45
+      max: 55
+- name: clump_1
+  spatial: sersic
+  sed:
+    model: fsps
+    sfh: ssp
+    nebular: true
+    dust: true
+    parameters:
+      gas_logu:
+        value: -2.0
+        min: -4.0
+        max: -1.0
+        vary: false
+  parameters:
+    x:
+      value: 45
+      min: 20
+      max: 80
+    y:
+      value: 48
+      min: 20
+      max: 80
+    re:
+      value: 2
+      min: 0.3
+      max: 15
+    n:
+      value: 1
+      min: 0.3
+      max: 6.2
+    q:
+      value: 0.7
+      min: 0.1
+      max: 1
+    pa:
+      value: 0
+      min: -180
+      max: 180
+- name: clump_2
+  spatial: sersic
+  sed:
+    model: fsps
+    sfh: ssp
+    nebular: true
+    dust: true
+    parameters:
+      gas_logu:
+        value: -2.0
+        min: -4.0
+        max: -1.0
+        vary: false
+  parameters:
+    x:
+      value: 50
+      min: 20
+      max: 80
+    y:
+      value: 51
+      min: 20
+      max: 80
+    re:
+      value: 2
+      min: 0.3
+      max: 15
+    n:
+      value: 1
+      min: 0.3
+      max: 6.2
+    q:
+      value: 0.7
+      min: 0.1
+      max: 1
+    pa:
+      value: 0
+      min: -180
+      max: 180
+- name: clump_3
+  spatial: sersic
+  sed:
+    model: fsps
+    sfh: ssp
+    nebular: true
+    dust: true
+    parameters:
+      gas_logu:
+        value: -2.0
+        min: -4.0
+        max: -1.0
+        vary: false
+  parameters:
+    x:
+      value: 55
+      min: 20
+      max: 80
+    y:
+      value: 54
+      min: 20
+      max: 80
+    re:
+      value: 2
+      min: 0.3
+      max: 15
+    n:
+      value: 1
+      min: 0.3
+      max: 6.2
+    q:
+      value: 0.7
+      min: 0.1
+      max: 1
+    pa:
+      value: 0
+      min: -180
+      max: 180
+fitting:
+  optimizer: scipy
+  multistart: 3
+  max_nfev: 300
+  variable_projection: true

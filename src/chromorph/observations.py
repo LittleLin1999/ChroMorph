@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
+import uuid
 from pathlib import Path
 import numpy as np
 from astropy.io import fits
@@ -20,6 +21,7 @@ class EmpiricalPSF:
     center: tuple[float, float] | None = None
     pixel_integrated: bool = True
     provenance: dict = field(default_factory=dict)
+    _cache_uid: str = field(default_factory=lambda: uuid.uuid4().hex, init=False, repr=False)
 
     def __post_init__(self):
         self.image = np.array(self.image, dtype=float, copy=True)
@@ -35,6 +37,19 @@ class EmpiricalPSF:
         if not (0 <= x < self.image.shape[1] and 0 <= y < self.image.shape[0]):
             raise ValueError("PSF center outside its stamp")
         self.image.setflags(write=False)
+        self._image_reference = self.image
+        self._image_version = 0
+
+    def cache_token(self):
+        if self.image is not self._image_reference:
+            image = np.array(self.image, dtype=float, copy=True)
+            if image.ndim != 2 or not np.isfinite(image).all() or image.sum() <= 0:
+                raise ValueError('Invalid replacement empirical PSF')
+            image.setflags(write=False)
+            self.image = self._image_reference = image
+            self._image_version += 1
+        return (self._cache_uid, self._image_version, tuple(self.center), self.pixel_scale,
+                self.pixel_integrated)
 
     def qa(self):
         positive = np.maximum(self.image, 0)
@@ -81,6 +96,8 @@ class Observation:
     throughput: object = None
     pivot_angstrom: float | None = None
     provenance: dict = field(default_factory=dict)
+    covariance: object = None
+    _likelihood_revision: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self):
         self.data = np.array(self.data, dtype=float, copy=True)
@@ -104,6 +121,27 @@ class Observation:
             raise ValueError("Invalid reference-to-observation affine transform")
         if not np.isclose(self.pixel_scale, self.psf.pixel_scale, rtol=.005):
             raise ValueError("Science and empirical PSF pixel scales disagree")
+
+    def likelihood_token(self):
+        return (self._likelihood_revision, id(self.data), id(self.sigma), id(self.mask), id(self.covariance), self.data.shape)
+
+    def freeze(self):
+        """Make fixed likelihood inputs immutable; use update() for changes."""
+        self.__post_init__()
+        for array in [self.data, self.sigma, self.mask]:
+            array.setflags(write=False)
+        if isinstance(self.covariance, np.ndarray):
+            from .noise import DenseCovariance
+            self.covariance = DenseCovariance(self.covariance)
+        self._likelihood_revision += 1
+
+    def update(self, **changes):
+        unknown = set(changes)-{'data', 'sigma', 'mask', 'covariance'}
+        if unknown:
+            raise ValueError('Unsupported observation updates: '+str(unknown))
+        for name, value in changes.items():
+            setattr(self, name, value)
+        self.freeze()
 
     @classmethod
     def from_fits(cls, path, psf, *, name, band, sigma_ext="ERR", mask_ext=None):

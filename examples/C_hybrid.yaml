@@ -1,6 +1,5 @@
-# Generic illustrative starting values; regenerate using discover-j1042.
-target: J1042
-data_root: /home/linxiaojing/data/lrd-squared/hst
+target: example
+observations: observations.yaml
 morphology:
   wavelength_mode: constant
   centroid_mode: independent
@@ -28,7 +27,7 @@ components:
   sed:
     model: fsps
     sfh: ssp
-    nebular: false
+    nebular: true
     dust: true
   parameters:
     x:
@@ -60,7 +59,7 @@ components:
   sed:
     model: fsps
     sfh: ssp
-    nebular: false
+    nebular: true
     dust: true
   parameters:
     x:
