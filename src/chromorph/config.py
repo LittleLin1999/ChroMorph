@@ -20,7 +20,7 @@ def parameter(spec):
     _keys(spec, ['value', 'min', 'max', 'vary', 'prior'], 'parameter')
     return Parameter(float(spec['value']), float(spec.get('min', '-inf')),
                      float(spec.get('max', 'inf')), bool(spec.get('vary', True)),
-                     None if spec.get('prior') is None else tuple(spec['prior']))
+                     spec.get('prior'))
 
 
 def load_config(path):
@@ -43,6 +43,11 @@ def load_config(path):
     elif 'data_root' in config:
         root = Path(config['data_root'])
         config['data_root'] = str(root if root.is_absolute() else Path(path).resolve().parent/root)
+    for row in config.get('components',[]):
+        sed=row.get('sed',{})
+        if sed.get('model')=='precomputed_fsps':
+            library=Path(sed['library'])
+            sed['library']=str(library if library.is_absolute() else Path(path).resolve().parent/library)
     return config
 
 
@@ -51,14 +56,15 @@ def build_scene(config, observations, *, renderer=None, context=None):
     _keys(fit, ['optimizer', 'multistart', 'seed', 'max_nfev', 'variable_projection',
                 'background', 'registration', 'calibration', 'compare_sed_modes', 'workers',
                 'method', 'likelihood', 'project_stellar_mass', 'estimate_uncertainty',
-                'checkpoint_directory', 'tolerance'], 'fitting')
+                'checkpoint_directory', 'tolerance', 'objective', 'allow_nuclear_flux_priors', 'sed_workers'], 'fitting')
     if fit.get('optimizer', 'scipy') not in {'scipy', 'trf', 'L-BFGS-B'}:
         raise ValueError('Use scipy, trf or L-BFGS-B for deterministic fitting')
     if fit.get('compare_sed_modes', False):
         raise ValueError("Use the compare CLI with separate A/B/C files to specify each SED choice explicitly")
     scene = Scene(observations, context=context or SEDContext(**config.get('context', {})), renderer=renderer,
                   fit_background=fit.get('background', False), fit_registration=fit.get('registration', False),
-                  fit_calibration=fit.get('calibration', False))
+                  fit_calibration=fit.get('calibration', False),
+                  allow_nuclear_flux_priors=fit.get('allow_nuclear_flux_priors',False),sed_workers=fit.get('sed_workers',1))
     try:
         for row in config['components']:
             _keys(row, ['name', 'spatial', 'nuclear', 'sed', 'parameters'], 'component')
@@ -67,6 +73,10 @@ def build_scene(config, observations, *, renderer=None, context=None):
             if model == 'free':
                 _keys(sedconfig, ['fluxes'], 'free SED')
                 sed = FreeBandSED(parameters=overrides, **sedconfig)
+            elif model == 'precomputed_fsps':
+                from .templates import PrecomputedFSPSSED
+                _keys(sedconfig,['library','experimental','fallback'],'precomputed SED')
+                sed=PrecomputedFSPSSED(parameters=overrides,**sedconfig)
             elif model == 'fsps':
                 _keys(sedconfig, ['sfh', 'nebular', 'dust', 'dust_type', 'cache_size', 'cache_bytes'], 'stellar SED')
                 sed = FSPSStellarSED(parameters=overrides, **sedconfig)

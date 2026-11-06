@@ -75,8 +75,10 @@ def test_nuclear_fluxes_are_unconstrained_and_not_tied(renderer):
     with pytest.raises(ValueError, match='free per-band'):
         Scene(observations()).add_component(PointSource('nucleus', FSPSStellarSED()))
     p = Parameter(1., 0, 10, prior=(1, .1))
-    with pytest.raises(ValueError, match='Nuclear fluxes'):
-        Scene(observations()).add_component(PointSource('nucleus', FreeBandSED(parameters={'blue': p})))
+    proper=Scene(observations())
+    proper.add_component(PointSource('nucleus', FreeBandSED(parameters={'blue': p})))
+    assert proper.registry.parameters['nucleus.flux.blue'].prior==(1.,.1)
+    assert proper.registry.parameters['nucleus.flux.red'].prior is None
 
 
 def test_sed_instance_reuse_is_rejected(renderer):

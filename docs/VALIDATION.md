@@ -51,7 +51,10 @@ selection criterion.
 
 Broader mismatch ensembles, correlated-noise uncertainty coverage, posterior
 multimodality and prior sensitivity remain necessary before strong science
-claims. The optional nuclear flat-prior marginalization defines a posterior
-but not an absolute Bayesian evidence; its output explicitly marks evidence
-undefined. PolyChord production settings and numerical convergence require
-separate validation for selected identifiable models.
+claims. Independent proper nuclear-flux priors allow posterior and absolute
+Bayesian evidence calculations while retaining a physically unconstrained
+nuclear SED. The optional improper-flat nuclear marginalization defines a
+posterior when integrable, and explicitly marks its evidence undefined.
+See [nuclear SED and priors](NUCLEAR_SED.md). PolyChord production settings and
+numerical convergence require separate validation for selected identifiable
+models.

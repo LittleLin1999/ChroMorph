@@ -13,16 +13,24 @@ from .spatial import PointSource
 class Scene:
     def __init__(self, observations, *, context=None, renderer=None,
                  fit_background=False, fit_registration=False, fit_calibration=False,
-                 cache_bytes=256*1024**2):
+                 cache_bytes=256*1024**2, allow_nuclear_flux_priors=False, sed_workers=1):
         self.observations = tuple(observations)
         if not self.observations or len({o.name for o in self.observations}) != len(self.observations):
             raise ValueError("Need observations with distinct names")
         self.context = context or SEDContext()
+        # Compatibility argument only: independent statistical flux priors are
+        # always allowed and never specify a nuclear spectral shape.
+        self.allow_nuclear_flux_priors = bool(allow_nuclear_flux_priors)
+        self.sed_workers=int(sed_workers)
+        self._spectral_engine=None
         self.renderer = renderer
         self.components = []
         from .cache import ExactLRU
         self._basis_cache = ExactLRU(cache_bytes)
         self._compressed = None
+        self._gaussian_cache = ExactLRU(cache_bytes//2)
+        self._gaussian_tokens = {}
+        self._likelihood_engines = {}
         self.metrics = dict(render_calls=0)
         self.registry = Registry()
         for index, o in enumerate(self.observations):
@@ -52,8 +60,8 @@ class Scene:
             if type(component.sed) is not FreeBandSED:
                 raise ValueError("The nucleus requires a completely free per-band SED")
             for p in component.sed.parameters.values():
-                if p.prior is not None or not p.vary or p.lower != 0 or np.isfinite(p.upper):
-                    raise ValueError("Nuclear fluxes cannot have stellar/color priors or fixed/upper-bound constraints")
+                if not p.vary or p.lower < 0:
+                    raise ValueError("Nuclear fluxes must remain independent, nonnegative and varying")
         # Register atomically so invalid configuration cannot leave a partial scene.
         staged = Registry()
         for key, p in component.parameters.items():
@@ -71,6 +79,28 @@ class Scene:
         self.registry.parameters.update(staged.parameters)
         self.components.append(component)
         return component
+
+    def nuclear_flux_names(self):
+        """One independent amplitude per observed band and nuclear component."""
+        from .grouping import component_groups
+        return [f'{name}.flux.{band}'
+                for name in component_groups(self.components)['nucleus']
+                for band in self.bands]
+
+    def validate_nuclear_seds(self):
+        """Guard the nuclear invariants after explicit registry edits, too."""
+        from .grouping import component_groups
+        nuclear = set(component_groups(self.components)['nucleus'])
+        for component in self.components:
+            if component.name in nuclear and type(component.sed) is not FreeBandSED:
+                raise ValueError('The nucleus requires a completely free per-band SED')
+        names = set(self.nuclear_flux_names())
+        for name in names:
+            p = self.registry.parameters[name]
+            if not p.vary or p.lower < 0:
+                raise ValueError('Nuclear fluxes must remain independent, nonnegative and varying')
+        if names.intersection(self.registry.ties) or names.intersection(self.registry.ties.values()):
+            raise ValueError('Nuclear fluxes cannot be tied')
 
     def tie(self, name, target):
         for c in self.components:
@@ -133,13 +163,21 @@ class Scene:
             self._compressed = CompressedGaussianLikelihood(self)
         return self._compressed
 
+    def component_fluxes(self,values):
+        from .spectral import SpectralEngine
+        if self._spectral_engine is None:self._spectral_engine=SpectralEngine(self,workers=self.sed_workers)
+        return self._spectral_engine.fluxes(values)
+
+    def __getstate__(self):
+        state=dict(self.__dict__);state['_spectral_engine']=None;state['_likelihood_engines']={}
+        return state
+
     def predict(self, values=None, *, basis=None):
         if not self.components:
             raise ValueError("Scene has no components")
         values = self.registry.unpack() if values is None else values
         basis = self.basis(values) if basis is None else basis
-        fluxes = {c.name: c.sed.fluxes(values, c.name, self.observations, self.context)
-                  for c in self.components}
+        fluxes = self.component_fluxes(values)
         if any(not np.isfinite(v) or v < 0 for bands in fluxes.values() for v in bands.values()):
             raise ValueError("SED must predict finite nonnegative microJy fluxes")
         images, models = {}, {}
@@ -167,8 +205,41 @@ class Scene:
                      -.5*(residual@residual))
 
     def clear_caches(self):
+        if self._spectral_engine is not None:self._spectral_engine.close();self._spectral_engine=None
         self._basis_cache.clear()
+        self._gaussian_cache.clear()
+        self._gaussian_tokens.clear()
+        self._likelihood_engines.clear()
         self._compressed = None
+
+    def gaussian_data(self, observation):
+        """Reuse only parameter-independent whitening and data statistics."""
+        from .noise import whitening_for
+        from .direct import FixedGaussianData
+        token = observation.likelihood_token()
+        if self._gaussian_tokens.get(observation.name) != token:
+            observation.freeze()
+            token = observation.likelihood_token()
+            self._gaussian_tokens[observation.name] = token
+        key = (observation.name, token)
+        fixed = self._gaussian_cache.get(key)
+        if fixed is None:
+            whitening = whitening_for(observation)
+            target = whitening.whiten(observation.data[observation.mask])
+            target.setflags(write=False)
+            fixed = FixedGaussianData(token, whitening, target)
+            self._gaussian_cache[key] = fixed
+        return fixed
+
+    def loglikelihood(self, values=None, *, mode='auto'):
+        """Normalized Gaussian likelihood, without profiling nuisance parameters."""
+        from .direct import FullPixelLikelihood, AutoGaussianLikelihood
+        values = self.registry.unpack() if values is None else values
+        if mode == 'compressed':return self.compressed.loglikelihood(values)
+        if mode not in {'auto','full'}:raise ValueError('Use auto, full or compressed')
+        if mode not in self._likelihood_engines:
+            self._likelihood_engines[mode] = (FullPixelLikelihood(self) if mode=='full' else AutoGaussianLikelihood(self))
+        return self._likelihood_engines[mode].loglikelihood(values)
 
     def _eligible_linear(self):
         linked = set(self.registry.ties) | set(self.registry.ties.values())
@@ -206,7 +277,27 @@ class Scene:
         updated.update(zip(eligible, map(float, fluxes)))
         return updated
 
-    def fit(self, *, multistart=3, seed=0, max_nfev=300, variable_projection=True,
+    def fit(self, *, objective='map', **options):
+        """MAP with configured priors, or ML with statistical priors ignored.
+
+        Numerical bounds and explicitly fixed parameters still apply in ML.
+        A proper nuclear prior can therefore be used for Bayesian evidence
+        without limiting an ML amplitude through that statistical prior.
+        """
+        from dataclasses import asdict
+        self.validate_nuclear_seds()
+        if objective not in {'map','ml'}:raise ValueError('Use map or ml objective')
+        configured=self.registry.parameters
+        if objective=='ml':self.registry.parameters={n:replace(p,prior=None) for n,p in configured.items()}
+        try:
+            result=self._fit_implementation(**options)
+            result.objective_mode=objective
+            result.parameter_definitions_snapshot={n:asdict(p) for n,p in self.registry.parameters.items()}
+        finally:
+            self.registry.parameters=configured
+        return result
+
+    def _fit_implementation(self, *, multistart=3, seed=0, max_nfev=300, variable_projection=True,
             workers=1, likelihood='compressed', optimizer='trf', project_stellar_mass=True,
             estimate_uncertainty=True, checkpoint_directory=None, tolerance=1e-7):
         if likelihood == 'pixel':
@@ -280,14 +371,18 @@ class Scene:
         return result
 
     def close(self):
+        if self._spectral_engine is not None:self._spectral_engine.close();self._spectral_engine=None
         for c in self.components:
             if hasattr(c.sed, 'close'):
                 c.sed.close()
 
-    def sample_polychord(self, directory, **options):
-        """Sample the joint posterior with analytically marginalized nuclear fluxes."""
-        from .inference import PolyChordPosterior
-        return PolyChordPosterior(self).run(directory, **options)
+    def sample_polychord(self, directory, *, nuclear_mode='sample', likelihood='auto', **options):
+        """Sample all nuisance parameters; improper-flat marginalization is opt-in."""
+        from .inference import PolyChordPosterior, PolyChordSampler
+        if nuclear_mode=='sample':sampler=PolyChordSampler(self,likelihood=likelihood)
+        elif nuclear_mode=='flat_marginal':sampler=PolyChordPosterior(self,likelihood=likelihood)
+        else:raise ValueError('Use sample or flat_marginal nuclear mode')
+        return sampler.run(directory, **options)
 
     def __enter__(self):
         return self

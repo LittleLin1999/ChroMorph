@@ -9,6 +9,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 from .sed import FreeBandSED
+from .grouping import component_groups, grouped_images
 
 
 def _json(value):
@@ -46,6 +47,14 @@ class FitResult:
             self.warnings.append('Best optimizer run did not converge; inspect multistart results before interpretation.')
 
     def estimate_uncertainty(self):
+        from dataclasses import replace
+        original=self.scene.registry.parameters
+        if getattr(self,'objective_mode','map')=='ml':
+            self.scene.registry.parameters={n:replace(p,prior=None) for n,p in original.items()}
+        try:return self._estimate_uncertainty()
+        finally:self.scene.registry.parameters=original
+
+    def _estimate_uncertainty(self):
         scene = self.scene
         names = scene.registry.names()
         self.parameter_names = names
@@ -146,12 +155,14 @@ class FitResult:
                     n_pixels=self.n_pixels, n_parameters=self.n_parameters, multistart=self.runs,
                     projected_parameters=self.projected, uncertainty=self.uncertainty,
                     identifiability=self.identifiability, warnings=self.warnings,
-                    context=asdict(scene.context), parameter_definitions={n: asdict(p) for n, p in scene.registry.parameters.items()},
+                    context=asdict(scene.context), parameter_definitions=getattr(self,'parameter_definitions_snapshot',{n:asdict(p) for n,p in scene.registry.parameters.items()}),
+                    objective_mode=getattr(self,'objective_mode','map'),
                     ties=scene.registry.ties,
                     component_definitions={c.name: dict(spatial=type(c).__name__,
                         sed=c.sed.describe() if hasattr(c.sed, 'describe') else dict(model=type(c.sed).__name__))
                         for c in scene.components},
                     component_sed_classes={c.name: type(c.sed).__name__ for c in scene.components},
+                    component_grouping=component_groups(scene.components),
                     configuration=configuration, versions=versions,
                     observations={o.name: dict(band=o.band, psf=o.psf.qa(), provenance=o.provenance,
                                                affine_matrix=o.matrix, affine_offset=o.offset,
@@ -167,6 +178,9 @@ class FitResult:
             planes = dict(DATA=o.data, MODEL=self.models[o.name], RESID=o.data-self.models[o.name],
                           RESIDSIG=(o.data-self.models[o.name])/o.sigma,
                           SIGMA=o.sigma, MASK=o.mask.astype(np.uint8), PSF=o.psf.image)
+            grouped = grouped_images(scene.components, self.images[o.name])
+            planes.update(NUCLEUS=grouped['nucleus'], EXTENDED=grouped['extended'], PSFCLUMP=grouped['psf_clumps'])
+            np.testing.assert_allclose(self.models[o.name], grouped['nucleus']+grouped['extended']+self.values[f'observation.{o.name}.background'], rtol=1e-10, atol=1e-10)
             for c in scene.components:
                 image = self.images[o.name][c.name]
                 planes['COMP_'+c.name] = image
@@ -192,6 +206,7 @@ class FitResult:
         self._plots(directory)
         body = '<h1>ChroMorph joint fit</h1><p>χ²={:.3f}; BIC-like={:.3f}</p>'.format(self.chi2, self.bic_like)
         body += '<ul>'+''.join('<li>'+html.escape(w)+'</li>' for w in self.warnings)+'</ul>'
+        body += '<p>PSF model = central nuclear point source(s) only. Extended model = all non-nuclear components, including point-source clumps. The PSF FITS extension is the unit kernel; NUCLEUS is the fitted nuclear model.</p>'
         body += '<img src="diagnostic.png" alt="Image model and residuals" style="max-width:100%"><img src="sed.png" alt="Independent component SEDs" style="max-width:100%">'
         body += '<p><a href="result.json">Parameters and provenance</a> · <a href="photometry.ecsv">Component photometry</a> · <a href="images.fits">Images</a> · <a href="uncertainty.fits">Local covariance</a></p>'
         (directory/'index.html').write_text('<!doctype html><html><meta charset="utf-8"><title>ChroMorph QA</title><body>'+body+'</body></html>')

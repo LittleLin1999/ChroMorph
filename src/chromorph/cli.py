@@ -64,7 +64,7 @@ def example_configs(report):
 def fit_options(config):
     options = config.get('fitting', {})
     allowed = ['multistart', 'seed', 'max_nfev', 'variable_projection', 'workers',
-               'likelihood', 'project_stellar_mass', 'estimate_uncertainty', 'checkpoint_directory', 'tolerance']
+               'likelihood', 'project_stellar_mass', 'estimate_uncertainty', 'checkpoint_directory', 'tolerance', 'objective']
     result = {key: options[key] for key in allowed if key in options}
     method = options.get('optimizer', 'scipy')
     result['optimizer'] = options.get('method', 'trf') if method == 'scipy' else method
@@ -75,7 +75,7 @@ def observations_for(config):
     manifest = config.get('observations')
     if manifest is None:
         manifest = Path(config.get('data_root', '.'))/'observations.yaml'
-    stellar = any(c['sed']['model'] == 'fsps' for c in config['components'])
+    stellar = any(c['sed']['model'] in {'fsps','precomputed_fsps'} for c in config['components'])
     observations, report, defaults = load_observations(manifest, throughputs=stellar)
     if stellar and any(o.throughput is None for o in observations):
         raise ValueError('Physical SED components require an explicit throughput for every observation')
@@ -116,7 +116,9 @@ def main(argv=None):
     sample.add_argument('--nlive', type=int)
     sample.add_argument('--num-repeats', type=int)
     sample.add_argument('--precision', type=float, default=.01)
-    sample.add_argument('--seed', type=int, default=1042)
+    sample.add_argument('--seed', type=int, default=42)
+    sample.add_argument('--nuclear-mode', choices=['sample', 'flat_marginal'], default='sample',
+        help='sample: independent proper flux priors and evidence; flat_marginal: optional improper-flat posterior only')
     compare = commands.add_parser('compare')
     compare.add_argument('configs', type=Path, nargs='+'); compare.add_argument('--output', type=Path, required=True)
     validate = commands.add_parser('validate')
@@ -138,8 +140,8 @@ def main(argv=None):
         config = load_config(args.config)
         observations, report, context = observations_for(config)
         with build_scene(config, observations, context=context) as scene:
-            from .inference import PolyChordPosterior
-            posterior = PolyChordPosterior(scene)
+            from .inference import PolyChordSampler, PolyChordPosterior
+            posterior = PolyChordSampler(scene) if args.nuclear_mode=='sample' else PolyChordPosterior(scene)
             dimension = len(posterior.names)
             posterior.run(args.output, nlive=args.nlive or 25*dimension,
                           num_repeats=args.num_repeats or 5*dimension,

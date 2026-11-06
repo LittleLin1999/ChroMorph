@@ -65,3 +65,42 @@ def test_full_range_stellar_sum_and_synthetic_marker_convention(tmp_path, render
     assert nucleus.get_yscale() == 'linear' and nucleus.get_ylim()[0] < 0
     import matplotlib.pyplot as plt
     plt.close(figure)
+
+
+def test_non_nuclear_point_clump_belongs_to_extended(tmp_path, renderer):
+    from chromorph.grouping import grouped_images
+    from chromorph.result import FitResult
+    from astropy.io import fits
+    import json
+    scene = Scene(observations(), renderer=renderer)
+    scene.add_component(PointSource('central', FreeBandSED({'blue': 1., 'red': 2.}), nuclear=True,
+        parameters={'x': Parameter(12., vary=False), 'y': Parameter(12., vary=False)}))
+    scene.add_component(PointSource('psf_clump', FreeBandSED({'blue': 3., 'red': 4.}),
+        parameters={'x': Parameter(17., vary=False), 'y': Parameter(16., vary=False)}))
+    scene.add_component(clump('host', {'blue': 2., 'red': 1.}))
+    values = scene.registry.unpack();models, images, fluxes = scene.predict(values)
+    for o in scene.observations:o.update(data=models[o.name])
+    result = SimpleNamespace(scene=scene, values=values, models=models, images=images, fluxes=fluxes)
+    for o in scene.observations:
+        g = grouped_images(scene.components, images[o.name])
+        np.testing.assert_allclose(g['nucleus'], images[o.name]['central'])
+        np.testing.assert_allclose(g['extended'], images[o.name]['host']+images[o.name]['psf_clump'])
+    rgb = component_rgbs(result, crop=(0, 25, 0, 25))
+    assert rgb['component_grouping']['nucleus'] == ['central']
+    assert rgb['component_grouping']['psf_clumps'] == ['psf_clump']
+    assert 'component:psf_clump' in rgb['images']
+    np.testing.assert_allclose(rgb['images']['extended'], rgb['images']['data_minus_psf'], atol=1e-13)
+    fig = plot_component_sed(result, tmp_path)
+    line = next(x for x in fig.axes[0].lines if x.get_gid() == 'photometry:__extended__')
+    np.testing.assert_allclose(line.get_ydata(), microjy_to_scaled_flam([5., 5.], [4000., 7000.]))
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+    full = FitResult(scene, values, [dict(success=True, objective=0.)], [])
+    full.parameter_names = scene.registry.names();full.uncertainty = {};full.covariance = np.empty((0,0));full.correlation = np.empty((0,0));full.identifiability = {}
+    full.write(tmp_path/'written')
+    info = json.loads((tmp_path/'written/result.json').read_text())
+    assert info['component_grouping']['extended'] == ['psf_clump', 'host']
+    with fits.open(tmp_path/'written/images.fits') as hd:
+        np.testing.assert_allclose(hd['blue_NUCLEUS'].data, images['blue']['central'])
+        np.testing.assert_allclose(hd['blue_EXTENDED'].data, images['blue']['host']+images['blue']['psf_clump'])
+        np.testing.assert_allclose(hd['blue_PSFCLUMP'].data, images['blue']['psf_clump'])
