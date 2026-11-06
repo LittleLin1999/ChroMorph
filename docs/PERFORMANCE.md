@@ -162,3 +162,11 @@ pixel evaluation as an explicit candidate when global shapes dominate; use the
 component policy for partial changes/revisits. The production sampling default
 cannot be selected from these unconverged smoke checks alone. They demonstrate
 why cache-hit throughput is insufficient for inference-backend selection.
+
+
+## Experimental posterior-efficiency work
+
+See [SAMPLING_EFFICIENCY.md](SAMPLING_EFFICIENCY.md) for the exact shared target,
+transactional updates, blocked kernels, pocoMC comparison, reliability gates,
+measured synthetic CPU gain and explicit J1042 limitations. No production
+sampler or approximate Fourier likelihood is selected by this work.

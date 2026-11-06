@@ -100,3 +100,9 @@ Incompatible checkpoint signatures/order/schema are rejected; use a new run
 directory. Signatures include input contents, priors, physical configuration,
 rendering settings and dependency versions, not initial guesses or addresses.
 Opaque custom covariance operators require a stable persisted signature.
+
+
+Posterior sampling adds sampler-independent posterior.py and transactions.py.
+blocked.py and population.py are optional experimental inference adapters over
+that same target; basic Gaussian mathematics does not depend on them. See
+[SAMPLING_EFFICIENCY.md](SAMPLING_EFFICIENCY.md) for ownership and gate details.

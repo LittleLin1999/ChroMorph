@@ -150,3 +150,11 @@ integral with 64 and 192 live points and two seeds. Absolute log-evidence errors
 are 0.0732 and 0.1911 at 64 live points, and 0.0100 and 0.00214 at 192; all are
 within 0.64 reported standard errors. This validates normalized toy evidence,
 not galaxy model selection or posterior coverage in blended clumps.
+
+
+## Experimental posterior-efficiency work
+
+See [SAMPLING_EFFICIENCY.md](SAMPLING_EFFICIENCY.md) for the exact shared target,
+transactional updates, blocked kernels, pocoMC comparison, reliability gates,
+measured synthetic CPU gain and explicit J1042 limitations. No production
+sampler or approximate Fourier likelihood is selected by this work.

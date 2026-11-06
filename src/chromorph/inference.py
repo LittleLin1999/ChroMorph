@@ -36,68 +36,15 @@ def nuclear_prior_metadata(scene, marginalized=()):
                 cross_filter_prior_correlation=False, fluxes=rows)
 
 
-class PolyChordPosterior:
+from .posterior import ExactPosteriorTarget
+
+
+class PolyChordPosterior(ExactPosteriorTarget):
     """Optional exact flat-amplitude integration for posterior-only inference."""
     evidence_defined = False
-    def __init__(self, scene, *, likelihood='auto'):
-        scene.validate_nuclear_seds()
-        if likelihood not in {'auto','full','compressed'}:raise ValueError('Unknown likelihood path')
-        self.likelihood=likelihood
-        self.evaluator=scene.prepare()
-        from .spatial import PointSource
-        self.scene = scene
-        self.linear = [n for c in scene.components
-                       if isinstance(c, PointSource) and (c.nuclear or c.name in {'nucleus', 'nuclear'})
-                       for n in scene._eligible_linear() if n.startswith(c.name+'.flux.')]
-        if len({n.split('.')[-1] for n in self.linear}) != len(self.linear):
-            raise ValueError('Analytic nuclear marginalization requires one nuclear amplitude per band')
-        self.derived_names=[name+suffix for name in self.linear for suffix in ['.conditional_location','.conditional_scale']]
-        self.metrics=dict(restoration_replay_evaluations=0,restored_flux_draws=0)
-        self.speed_groups=scene.registry.cost_groups(scene.registry.names(exclude=self.linear))
-        self.names=[n for group in self.speed_groups.values() for n in group]
+    def __init__(self,scene,*,likelihood='auto'):
+        super().__init__(scene,likelihood=likelihood)
         self.grade_dims=[len(group) for group in self.speed_groups.values() if group]
-        self.lower, self.upper = scene.registry.bounds(self.names)
-        for name, lo, hi in zip(self.names, self.lower, self.upper):
-            if scene.registry.parameters[name].prior is None and not np.isfinite([lo, hi]).all():
-                raise ValueError('PolyChord needs a proper prior for '+name)
-        from .priors import CubePriorTransform
-        self._prior_transform=CubePriorTransform(scene.registry,self.names)
-        self.evidence_defined=not bool(self.linear)
-        self.flux_measure = ('independent flat F>=0, dF in microJy; no finite upper limit'
-                             if self.linear else 'independent normalized scalar priors')
-
-    def prior(self, unit_cube):
-        return self._prior_transform(unit_cube)
-
-    def evaluate(self,vector):
-        values=self.scene.registry.unpack(vector,self.names)
-        return self.evaluator.marginalized_loglikelihood(values,self.linear,mode=self.likelihood)
-
-    def loglikelihood(self, vector):
-        value, conditional = self.evaluate(vector)
-        return value, [float(x) for name in self.linear for x in conditional[name]]
-
-    def restore_fluxes(self, samples, *, derived=None, seed=0):
-        """One exact conditional truncated-normal draw per posterior sample."""
-        samples=np.asarray(samples,dtype=float)
-        if derived is not None:
-            derived=np.asarray(derived,dtype=float)
-            if derived.shape!=(len(samples),2*len(self.linear)) or not np.isfinite(derived).all():
-                raise ValueError('Invalid stored nuclear conditional columns')
-            if np.any(derived[:,1::2]<=0):raise ValueError('Conditional Gaussian scales must be positive')
-        rng = np.random.default_rng(seed)
-        output = np.empty((len(samples), len(self.names)+len(self.linear)))
-        output[:, :len(self.names)] = samples
-        for i, row in enumerate(samples):
-            if derived is None and self.linear:
-                _, conditional = self.evaluate(row)
-                self.metrics['restoration_replay_evaluations']+=1
-            for j, name in enumerate(self.linear):
-                mean, sigma = conditional[name] if derived is None else derived[i,2*j:2*j+2]
-                self.metrics['restored_flux_draws']+=1
-                output[i, len(self.names)+j] = truncnorm.rvs(-mean/sigma, np.inf,
-                    loc=mean, scale=sigma, random_state=rng)
-        return self.names+self.linear, output
 
     def _run_analytic(self,directory,*,restore_samples=2000,**options):
         """No nested sampler is needed when all remaining quantities are conditional."""
@@ -117,10 +64,6 @@ class PolyChordPosterior:
             nuclear_sed=nuclear_prior_metadata(self.scene,self.linear))
         (directory/'inference.json').write_text(json.dumps(json_value(report),indent=2)+'\n')
         return SimpleNamespace(logZ=report['log_evidence'],logZerr=0. if self.evidence_defined else None,nlike=1)
-
-    def signature(self):
-        return content_signature(dict(model=model_signature(self.scene),sampled_names=self.names,
-            derived_names=self.derived_names,linear_measure=self.linear,posterior_schema_version=POSTERIOR_SCHEMA_VERSION))
 
     def run(self, directory, *, restore_samples=2000, **options):
         """Run public PyPolyChord; each MPI rank owns a separate Scene.
@@ -239,6 +182,7 @@ class PolyChordSampler(PolyChordPosterior):
                 raise ValueError('Proper independent prior required for '+name+'; no spectral shape is imposed. '+str(e)) from e
         from .priors import CubePriorTransform
         self._prior_transform=CubePriorTransform(scene.registry,self.names)
+        self._prepare_prior_density()
         self.flux_measure='explicitly configured, independently normalized per-parameter priors'
 
     def evaluate(self,vector):
