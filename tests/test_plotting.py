@@ -35,3 +35,28 @@ def test_rgb_alignment_and_free_nuclear_display_preserve_science(tmp_path, rende
     assert (tmp_path/'sed_display.json').exists()
     import matplotlib.pyplot as plt
     plt.close(figure)
+
+
+def test_full_range_stellar_sum_and_synthetic_marker_convention(tmp_path, renderer):
+    from test_sfh_comparison import ReportPopulation
+    scene = Scene(observations(), renderer=renderer)
+    scene.add_component(PointSource('nucleus', FreeBandSED(), parameters={
+        'x': Parameter(12., vary=False), 'y': Parameter(12., vary=False)}))
+    scene.add_component(clump('one', sed=ReportPopulation(sfh='constant')))
+    scene.add_component(clump('two', x=17., sed=ReportPopulation(sfh='ssp')))
+    values = scene.registry.unpack();models, images, fluxes = scene.predict(values)
+    result = SimpleNamespace(scene=scene, values=values, models=models, images=images, fluxes=fluxes)
+    measured = {name: {b: f*1.1 for b, f in bands.items()} for name, bands in fluxes.items()}
+    figure = plot_component_sed(result, tmp_path, measured_fluxes=measured, xlim=(.22, 2.5))
+    lines = {line.get_gid(): line for line in figure.axes[0].lines if line.get_gid()}
+    assert lines['synthetic:one'].get_markerfacecolor() == 'white'
+    assert lines['photometry:one'].get_markerfacecolor() != 'white'
+    assert 'stellar-spectrum:nucleus' not in lines
+    total = lines['stellar-spectrum:total']
+    assert total.get_xdata().max() == 2.5
+    expected = sum(np.interp(total.get_xdata(), lines['stellar-spectrum:'+n].get_xdata(),
+                            lines['stellar-spectrum:'+n].get_ydata()) for n in ['one', 'two'])
+    np.testing.assert_allclose(total.get_ydata(), expected)
+    assert {'component:one', 'component:two', 'total'} <= component_rgbs(result)['images'].keys()
+    import matplotlib.pyplot as plt
+    plt.close(figure)

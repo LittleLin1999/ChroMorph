@@ -140,8 +140,12 @@ additional validation before strong scientific conclusions.
   and correlations, PDF/PNG diagnostics, and a standalone HTML report.
 - Nuclear fluxes are plotted as independent band points. Physical spectra are
   plotted as curves. No nuclear smooth SED is assumed.
-- SED figures use pivot-equivalent observed f_lambda, filter-throughput curves
-  and an aligned RGB footer for the extended model, PSF and data minus PSF.
+- SED figures use pivot-equivalent observed f_lambda, full-range individual
+  and summed stellar spectra, filter curves and an aligned RGB footer for
+  the total, extended model, PSF, data minus PSF and each extended component.
+  Filled markers show free-band photometry; white markers with colored edges
+  show synthetic/model band predictions. Optional reference photometry and
+  its local errors are supplied explicitly, with their source saved in metadata.
   Extended and PSF-subtracted data use a common noise-aware intensity stretch
   without smoothing. `result.plot_sed(directory, ...)` accepts optional
   display-only spectra/photometry and redraws without refitting.

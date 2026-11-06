@@ -38,7 +38,7 @@ def component_rgbs(result, *, crop=None):
     points = [c.name for c in scene.components if isinstance(c, PointSource)]
     extended = [c.name for c in scene.components if c.name not in points]
     if not points or not extended:return None
-    aligned = {key: [] for key in ['extended', 'point', 'data_minus_psf']}
+    aligned = {key: [] for key in ['total', 'extended', 'point', 'data_minus_psf']+['component:'+name for name in extended]}
     noise, validity = [], []
     for o in observations:
         bx = o.matrix[0, 0]*xx+o.matrix[0, 1]*yy+o.offset[0]+values[f'observation.{o.name}.dx']
@@ -48,7 +48,9 @@ def component_rgbs(result, *, crop=None):
         data_minus = o.data-values[f'observation.{o.name}.background']-point
         np.testing.assert_allclose(data_minus, host+o.data-result.models[o.name], rtol=1e-9, atol=1e-10)
         factor = o.ujy_per_rate/o.pixel_scale**2
-        for key, image in zip(aligned, [host, point, data_minus]):
+        planes = dict(total=host+point, extended=host, point=point, data_minus_psf=data_minus)
+        planes.update({'component:'+name: result.images[o.name][name] for name in extended})
+        for key, image in planes.items():
             aligned[key].append(factor*map_coordinates(image, [by, bx], order=1, mode='constant', cval=0.))
         noise.append(factor*float(np.median(o.sigma[o.mask])))
         validity.append(map_coordinates(o.mask.astype(float), [by, bx], order=1, mode='constant', cval=0.) > .999)
@@ -78,9 +80,10 @@ def component_rgbs(result, *, crop=None):
     common_valid = np.logical_and.reduce(validity)[y0:y1, x0:x1]
     for key, rgb in rgbs.items():
         intensity = rgb.mean(axis=-1)
-        if key == 'point':
+        if key not in {'extended', 'data_minus_psf'}:
             white = max(float(np.percentile(intensity, 99.5)), 1e-30)
-            display_intensity = np.arcsinh(6*np.maximum(intensity, 0)/white)/np.arcsinh(6)
+            stretch = 6. if key == 'point' else 1.
+            display_intensity = np.arcsinh(stretch*np.maximum(intensity, 0)/white)/np.arcsinh(stretch)
         else:
             display_intensity = np.arcsinh(np.maximum(intensity-black, 0)/(host_white-black))/np.arcsinh(1.)
         gain = np.divide(display_intensity, intensity, out=np.zeros_like(intensity), where=intensity > 0)
@@ -97,91 +100,121 @@ def component_rgbs(result, *, crop=None):
     return dict(images=rgbs, crop=[int(v) for v in crop], bands=[o.band for o in observations],
                 bar_pixels=bar_pixels, bar_label=bar_label,
                 host_white=host_white, host_black=black, smoothing=False,
-                note='Extended/data-minus-PSF share a stretch; PSF uses its own stretch. Masked pixels are black.')
+                note='Extended/data-minus-PSF share a stretch; other model panels are individually scaled. Masked pixels are black.')
 
 
 def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                        context_spectra=(), context_photometry=None, xlim=None,
-                       ylim=None, rgb_crop=None, prefix='sed'):
-    """Draw the fitted components plus optional display-only observational context.
+                       ylim=None, rgb_crop=None, prefix='sed', measured_fluxes=None,
+                       measured_errors=None, photometry_source=None):
+    """Plot full-range stellar curves and measured versus synthetic band fluxes.
 
-    Context curves contain wave_micron, scaled_flam, label and optional color.
-    Context photometry additionally contains error in the same f_lambda units.
-    Stellar curves are limited to the observed-filter region. No curve is
-    invented for a free-band SED. Return the figure for inspection/customizing.
+    measured_fluxes/errors are nested component -> band -> microJy dictionaries,
+    normally supplied by an independent free-band decomposition of the same data.
+    Aggregate errors may be supplied under __total__ and __stellar__; these
+    should include cross-component covariance. No physical nuclear curve is drawn.
+    Context spectra/photometry are display-only. Filled points are photometry;
+    white points with colored edges are fitted-model band predictions.
     """
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from matplotlib.ticker import NullFormatter, FixedLocator, FuncFormatter
     from matplotlib import patheffects as pe
+    from matplotlib.lines import Line2D
+    from astropy.table import Table
     scene = result.scene
     observed = sorted({o.band: o for o in scene.observations}.values(),
                       key=lambda o: o.pivot_angstrom or scene.bands.index(o.band)+1)
-    calibrated_wavelengths = all(o.pivot_angstrom is not None for o in observed)
+    calibrated = all(o.pivot_angstrom is not None for o in observed)
     pivots = np.array([o.pivot_angstrom or (scene.bands.index(o.band)+1)*1e4 for o in observed])
     waves = pivots/1e4
-    convert = (lambda f: microjy_to_scaled_flam(f, pivots)) if calibrated_wavelengths else np.asarray
+    limits = xlim or (waves.min()*.82, waves.max()*1.18)
+    convert = (lambda f: microjy_to_scaled_flam(f, pivots)) if calibrated else np.asarray
+    physical = any(not isinstance(c.sed, FreeBandSED) for c in scene.components)
+    measured = measured_fluxes if measured_fluxes is not None else {
+        c.name: result.fluxes[c.name] for c in scene.components if isinstance(c.sed, FreeBandSED)}
+    errors = measured_errors or {}
     styles = {'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix', 'font.size': 15,
               'xtick.direction': 'in', 'ytick.direction': 'in', 'xtick.minor.visible': True,
               'ytick.minor.visible': True, 'xtick.top': True, 'ytick.right': True,
               'ytick.left': True, 'pdf.fonttype': 42, 'ps.fonttype': 42}
+    records = []
     with plt.rc_context(styles):
         rgb = component_rgbs(result, crop=rgb_crop)
-        fig, ax = plt.subplots(figsize=(10.4, 6.6), layout='constrained')
+        fig, ax = plt.subplots(figsize=(10.4, 6.5), layout='constrained')
         for spectrum in context_spectra:
-            ax.plot(spectrum['wave_micron'], spectrum['scaled_flam'], lw=.65,
+            ax.plot(spectrum['wave_micron'], spectrum['scaled_flam'], lw=.7,
                     color=spectrum.get('color', '#3e6ca8'), alpha=.85,
                     label=spectrum.get('label'), zorder=1, rasterized=True)
         if context_photometry is not None:
             p = context_photometry
-            ax.errorbar(p['wave_micron'], p['scaled_flam'], yerr=p['error'], fmt='s', ms=6.5,
-                        mfc='white', mec='#56687a', color='#56687a', lw=.8, capsize=2,
-                        label=p.get('label', 'Aperture photometry (context)'), zorder=3)
+            ax.errorbar(p['wave_micron'], p['scaled_flam'], yerr=p['error'], fmt='s', ms=5.5,
+                        mfc='#56687a', mec='#56687a', color='#56687a', lw=.7, capsize=2,
+                        label=p.get('label', 'Ground photometry'), zorder=3)
         point_names = [c.name for c in scene.components if isinstance(c, PointSource)]
         extended = [c for c in scene.components if c.name not in point_names]
-        total = convert([sum(result.fluxes[c.name][o.band] for c in scene.components) for o in observed])
-        ax.plot(waves, np.where(total > 0, total, np.nan), ls='none', marker='s', ms=9.5,
-                mfc='white', mec='#364d65', mew=1.5, label='HST total model', zorder=6)
+
+        def draw_points(key, names, color, marker, label, size=7.5):
+            model = np.array([sum(result.fluxes[n][o.band] for n in names) for o in observed])
+            actual = (np.array([sum(measured[n][o.band] for n in names) for o in observed])
+                      if all(n in measured for n in names) else None)
+            error_key = names[0] if len(names) == 1 else key
+            error = np.array([errors.get(error_key, {}).get(o.band, np.nan) for o in observed], dtype=float)
+            if actual is not None:
+                line, = ax.plot(waves, np.where(actual > 0, convert(actual), np.nan), ls='none',
+                    marker=marker, ms=size, mfc=color, mec=color, mew=1., label=label, zorder=7)
+                line.set_gid('photometry:'+key)
+                valid = np.isfinite(error) & (error >= 0) & (actual > 0)
+                if np.any(valid):
+                    ax.errorbar(waves[valid], convert(actual)[valid], yerr=convert(error)[valid],
+                                fmt='none', ecolor=color, elinewidth=.75, capsize=2, zorder=6)
+            if physical:
+                line, = ax.plot(waves, np.where(model > 0, convert(model), np.nan), ls='none',
+                    marker='o', ms=6., mfc='white', mec=color, mew=1.25,
+                    label=label if actual is None else None, zorder=8)
+                line.set_gid('synthetic:'+key)
+            for i, o in enumerate(observed):
+                records.append(dict(component=key, band=o.band, wavelength_angstrom=pivots[i],
+                    photometry_microjy=np.nan if actual is None else actual[i],
+                    photometry_error_microjy=error[i], model_microjy=model[i]))
+
+        draw_points('__total__', [c.name for c in scene.components], '#364d65', 's', 'HST total', 9.)
         if extended:
-            host = convert([sum(result.fluxes[c.name][o.band] for c in extended) for o in observed])
-            ax.plot(waves, np.where(host > 0, host, np.nan), ls='none', marker='D', ms=7.8,
-                    mfc='#167e72', mec='#263238', mew=.9, label='Sum of extended components', zorder=7)
-        zero_points = []
-        for index, c in enumerate(scene.components):
-            flux = np.array([result.fluxes[c.name][o.band] for o in observed])
+            draw_points('__stellar__', [c.name for c in extended], '#167e72', 'D',
+                        'Total stellar' if physical else 'Extended', 8.)
+        spectra = []
+        for c in scene.components:
             point = c.name in point_names
-            if point:
-                color, marker = '#a54449', 'o'
-                label = c.name+' (free band fluxes)'
-            else:
-                color, marker = COMPONENT_STYLES[extended.index(c) % len(COMPONENT_STYLES)]
-                label = c.name+(' (free)' if isinstance(c.sed, FreeBandSED) else ' (stellar)')
-            points = ax.plot(waves, np.where(flux > 0, convert(flux), np.nan), ls='none',
-                    marker=marker, ms=7.5, mfc=color if point else 'white', mec=color,
-                    mew=1.3, label=label, zorder=8)[0]
-            points.set_gid('photometry:'+c.name)
-            zero_points += [c.name+': '+o.band+' = 0' for o, f in zip(observed, flux) if f <= 0]
-            if calibrated_wavelengths and not isinstance(c.sed, FreeBandSED) and hasattr(c.sed, 'spectrum'):
+            color, marker = ('#a54449', 'o') if point else COMPONENT_STYLES[extended.index(c) % len(COMPONENT_STYLES)]
+            draw_points(c.name, [c.name], color, marker, 'PSF' if point and len(point_names) == 1 else c.name)
+            if calibrated and not isinstance(c.sed, FreeBandSED) and hasattr(c.sed, 'spectrum'):
                 w, flam = c.sed.spectrum(result.values, c.name, scene.context)
-                visible = ((w >= pivots.min()*.85) & (w <= pivots.max()*1.15)
-                           & np.isfinite(flam) & (flam > 0))
-                line, = ax.plot(w[visible]/1e4, flam[visible]*1e17, color=color, lw=.85, alpha=.85, zorder=4)
+                valid = np.isfinite(w) & np.isfinite(flam)
+                w, flam = np.asarray(w)[valid], np.asarray(flam)[valid]
+                spectra.append((w, flam))
+                visible = (w/1e4 >= limits[0]) & (w/1e4 <= limits[1]) & (flam > 0)
+                line, = ax.plot(w[visible]/1e4, flam[visible]*1e17, color=color, lw=.85, alpha=.9, zorder=4)
                 line.set_gid('stellar-spectrum:'+c.name)
-        if zero_points:
-            ax.text(.02, .97, '\n'.join(zero_points), transform=ax.transAxes, va='top', fontsize=8)
-        ax.set(xscale='log', yscale='log', xlim=xlim or (waves.min()*.82, waves.max()*1.18),
-               xlabel='Observed wavelength (µm)' if calibrated_wavelengths else 'Band index',
+        if spectra:
+            # Sum on the union grid within common coverage; no spectral extrapolation.
+            low = max(limits[0]*1e4, max(w[0] for w, f in spectra))
+            high = min(limits[1]*1e4, min(w[-1] for w, f in spectra))
+            grid = np.unique(np.concatenate([w[(w >= low) & (w <= high)] for w, f in spectra]))
+            total_stellar = sum(np.interp(grid, w, f) for w, f in spectra)
+            line, = ax.plot(grid/1e4, np.where(total_stellar > 0, total_stellar*1e17, np.nan),
+                           color='#167e72', lw=1.35, zorder=5)
+            line.set_gid('stellar-spectrum:total')
+        ax.set(xscale='log', yscale='log', xlim=limits,
+               xlabel='Observed wavelength (µm)' if calibrated else 'Band index',
                ylabel=(r'Observed $f_\lambda$ ($10^{-17}$ erg s$^{-1}$ cm$^{-2}$ $\AA^{-1}$)'
-                       if calibrated_wavelengths else 'Flux density (µJy)'), title=title)
+                       if calibrated else 'Flux density (µJy)'), title=title)
         if ylim is not None:ax.set_ylim(ylim)
-        if xlim is not None:
-            ticks = [t for t in [.2, .3, .4, .6, .8, 1., 1.5, 2., 2.5, 3.] if xlim[0] <= t <= xlim[1]]
-        else:ticks = list(waves)
+        ticks = ([t for t in [.2, .3, .4, .6, .8, 1., 1.5, 2., 2.5, 3.] if limits[0] <= t <= limits[1]]
+                 if xlim is not None else list(waves))
         ax.xaxis.set_major_locator(FixedLocator(ticks))
         ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f'{x:g}'))
         ax.xaxis.set_minor_formatter(NullFormatter())
-        # The inset strip occupies a dedicated footer, never covering spectra.
         for index, o in enumerate(observed):
             throughput = getattr(o.throughput, 'bandpass', None)
             if throughput is None:continue
@@ -197,44 +230,45 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
             if index > 0 and waves[index]/waves[index-1] < 1.15:label_wave *= 1.035
             ax.text(label_wave, .115, o.band, color=color, transform=ax.get_xaxis_transform(),
                     ha='center', va='bottom', fontsize=9)
-        legend = ax.legend(loc='upper right', ncol=2, fontsize=9, frameon=False,
-                  facecolor='white', labelspacing=.35, columnspacing=1.2, handletextpad=.45)
+        handles, labels = ax.get_legend_handles_labels()
+        if physical:
+            handles.append(Line2D([], [], ls='none', marker='o', ms=6., mfc='white', mec='#333333', mew=1.25))
+            labels.append('Synthetic')
+        legend = ax.legend(handles, labels, loc='upper right', ncol=2, fontsize=9, frameon=False,
+                           labelspacing=.35, columnspacing=1.2, handletextpad=.45)
         for label in legend.get_texts():
             label.set_path_effects([pe.withStroke(linewidth=2.5, foreground='white')])
         if rgb is not None:
-            # A separate lower row keeps all SED curves visible at every wavelength.
             fig.set_layout_engine(None)
-            fig.subplots_adjust(left=.105, right=.98, top=.91, bottom=.40)
-            labels = [('extended', 'Extended model RGB'), ('point', 'PSF source RGB'),
-                      ('data_minus_psf', 'Data - fitted PSF RGB')]
-            for i, (key, label) in enumerate(labels):
-                inset = fig.add_axes([.38+i*.19, .075, .17, .215])
+            fig.subplots_adjust(left=.105, right=.98, top=.91, bottom=.38)
+            panels = [('total', 'Total'), ('extended', 'Extended'), ('point', 'PSF'), ('data_minus_psf', 'Data - PSF')]
+            panels += [('component:'+c.name, c.name) for c in extended]
+            width = .875/len(panels)
+            for i, (key, label) in enumerate(panels):
+                inset = fig.add_axes([.105+i*width, .035, width*.92, .22])
                 inset.imshow(rgb['images'][key], origin='lower', interpolation='nearest')
-                h, width = rgb['images'][key].shape[:2]
-                bar = rgb['bar_pixels']
-                if bar < width*.8:
+                bar = rgb['bar_pixels'];h, image_width = rgb['images'][key].shape[:2]
+                if i == 0 and bar < image_width*.8:
                     inset.plot([2, 2+bar], [2, 2], color='white', lw=2, solid_capstyle='butt')
-                    text = inset.text(2, 3.5, rgb['bar_label'], color='white', fontsize=8, va='bottom')
+                    text = inset.text(2, 3.5, rgb['bar_label'], color='white', fontsize=7, va='bottom')
                     text.set_path_effects([pe.withStroke(linewidth=1.5, foreground='black')])
                 inset.set(xticks=[], yticks=[], title=label)
                 inset.title.set_fontsize(10)
                 for spine in inset.spines.values():spine.set(color='#46505a', linewidth=.8)
-            blue, green, red = np.array_split(rgb['bands'], 3) if len(rgb['bands']) >= 3 else (rgb['bands'][:1], rgb['bands'], rgb['bands'][-1:])
-            channel_note = ('RGB channels\nR = '+ '/'.join(red)+'\nG = '+ '/'.join(green)
-                            +'\nB = '+ ('mean('+ ', '.join(blue)+')' if len(blue) > 1 else '/'.join(blue)))
-            fig.text(.105, .265, channel_note, fontsize=9, va='top', linespacing=1.3)
-            fig.text(.105, .13, 'Extended / data - PSF:\nsame stretch, no smoothing.\nPSF: separate stretch.', fontsize=9, linespacing=1.3, va='top')
-        note = 'Points: band-integrated model fluxes; curves: stellar models over HST coverage.'
-        if context_spectra or context_photometry is not None:note += '\nObserved spectra / aperture photometry are display context only.'
-        fig.text(.105, .005, note, fontsize=8, color='#515b65', va='bottom')
         directory = Path(directory);directory.mkdir(parents=True, exist_ok=True)
+        note = ('Filled: measured free-band photometry; white/colored edge: model band predictions. '
+                'Stellar curves cover the full displayed range; context spectra are not fitted. '
+                'Nuclear predictions are independent band amplitudes, not an FSPS spectrum.')
         fig.savefig(directory/(prefix+'.pdf'), dpi=300, metadata={'Subject': note})
         fig.savefig(directory/(prefix+'.png'), dpi=220)
-        # Record display settings independently of scientific fit products.
+        Table(rows=records).write(directory/(prefix+'_photometry.ecsv'), format='ascii.ecsv', overwrite=True)
         import json
-        settings = dict(title=title, units='pivot_equivalent_scaled_flam' if calibrated_wavelengths else 'microjy',
-                        flux_definition='total_model_microjy', context_used_in_likelihood=False,
-                        nuclear_curves=False, xlim=list(ax.get_xlim()), ylim=list(ax.get_ylim()))
+        settings = dict(title=title, units='pivot_equivalent_scaled_flam' if calibrated else 'microjy',
+                        flux_definition='total_microjy', context_used_in_likelihood=False,
+                        photometry_source=photometry_source, measured_error_type='local linear covariance',
+                        synthetic_style='white face, colored edge', measured_style='filled color',
+                        nuclear_curves=False, total_stellar_curve=bool(spectra),
+                        xlim=list(ax.get_xlim()), ylim=list(ax.get_ylim()))
         if rgb is not None:settings['rgb'] = {k: v for k, v in rgb.items() if k != 'images'}
         (directory/(prefix+'_display.json')).write_text(json.dumps(settings, indent=2)+'\n')
         return fig
