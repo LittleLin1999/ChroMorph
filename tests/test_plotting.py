@@ -47,7 +47,8 @@ def test_full_range_stellar_sum_and_synthetic_marker_convention(tmp_path, render
     values = scene.registry.unpack();models, images, fluxes = scene.predict(values)
     result = SimpleNamespace(scene=scene, values=values, models=models, images=images, fluxes=fluxes)
     measured = {name: {b: f*1.1 for b, f in bands.items()} for name, bands in fluxes.items()}
-    figure = plot_component_sed(result, tmp_path, measured_fluxes=measured, xlim=(.22, 2.5))
+    figure = plot_component_sed(result, tmp_path, measured_fluxes=measured, xlim=(.22, 2.5), separate_components=True,
+        nuclear_spectra=[dict(wave_micron=[.4, 1., 2.], scaled_flam=np.array([-.1, .3, .6]))])
     lines = {line.get_gid(): line for line in figure.axes[0].lines if line.get_gid()}
     assert lines['synthetic:one'].get_markerfacecolor() == 'white'
     assert lines['photometry:one'].get_markerfacecolor() != 'white'
@@ -58,5 +59,7 @@ def test_full_range_stellar_sum_and_synthetic_marker_convention(tmp_path, render
                             lines['stellar-spectrum:'+n].get_ydata()) for n in ['one', 'two'])
     np.testing.assert_allclose(total.get_ydata(), expected)
     assert {'component:one', 'component:two', 'total'} <= component_rgbs(result)['images'].keys()
+    nucleus = next(ax for ax in figure.axes if ax.get_title().startswith('PSF:'))
+    assert nucleus.get_yscale() == 'linear' and nucleus.get_ylim()[0] < 0
     import matplotlib.pyplot as plt
     plt.close(figure)

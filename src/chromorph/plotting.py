@@ -106,7 +106,9 @@ def component_rgbs(result, *, crop=None):
 def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                        context_spectra=(), context_photometry=None, xlim=None,
                        ylim=None, rgb_crop=None, prefix='sed', measured_fluxes=None,
-                       measured_errors=None, photometry_source=None):
+                       measured_errors=None, photometry_source=None,
+                       separate_components=False, spectrum_provenance=None,
+                       nuclear_spectra=()):
     """Plot full-range stellar curves and measured versus synthetic band fluxes.
 
     measured_fluxes/errors are nested component -> band -> microJy dictionaries,
@@ -142,7 +144,9 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
     records = []
     with plt.rc_context(styles):
         rgb = component_rgbs(result, crop=rgb_crop)
-        fig, ax = plt.subplots(figsize=(10.4, 6.5), layout='constrained')
+        has_point = any(isinstance(c, PointSource) for c in scene.components)
+        nuclear_detail = separate_components and has_point
+        fig, ax = plt.subplots(figsize=(10.4, 10.5 if nuclear_detail else 9.5 if separate_components else 6.5), layout='constrained')
         for spectrum in context_spectra:
             ax.plot(spectrum['wave_micron'], spectrum['scaled_flam'], lw=.7,
                     color=spectrum.get('color', '#3e6ca8'), alpha=.85,
@@ -240,12 +244,14 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
             label.set_path_effects([pe.withStroke(linewidth=2.5, foreground='white')])
         if rgb is not None:
             fig.set_layout_engine(None)
-            fig.subplots_adjust(left=.105, right=.98, top=.91, bottom=.38)
+            fig.subplots_adjust(left=.105, right=.98, top=.95 if nuclear_detail else .94 if separate_components else .91,
+                                bottom=.66 if nuclear_detail else .60 if separate_components else .38)
             panels = [('total', 'Total'), ('extended', 'Extended'), ('point', 'PSF'), ('data_minus_psf', 'Data - PSF')]
             panels += [('component:'+c.name, c.name) for c in extended]
             width = .875/len(panels)
             for i, (key, label) in enumerate(panels):
-                inset = fig.add_axes([.105+i*width, .035, width*.92, .22])
+                inset = fig.add_axes([.105+i*width, .025 if nuclear_detail else .035, width*.92,
+                                      .145 if nuclear_detail else .20 if separate_components else .22])
                 inset.imshow(rgb['images'][key], origin='lower', interpolation='nearest')
                 bar = rgb['bar_pixels'];h, image_width = rgb['images'][key].shape[:2]
                 if i == 0 and bar < image_width*.8:
@@ -255,6 +261,87 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                 inset.set(xticks=[], yticks=[], title=label)
                 inset.title.set_fontsize(10)
                 for spine in inset.spines.values():spine.set(color='#46505a', linewidth=.8)
+        panel_ylimits = {}
+        if nuclear_detail:
+            panel = fig.add_axes([.105, .45, .875/3*1.88, .13])
+            nuclear_values = [];segment_bounds = []
+            for spectrum in nuclear_spectra:
+                line = np.asarray(spectrum['scaled_flam'])
+                panel.plot(spectrum['wave_micron'], line, color=spectrum.get('color', '#3e6ca8'), lw=.65)
+                nuclear_values.extend(line[np.isfinite(line)].tolist())
+                if np.isfinite(line).any():segment_bounds.append(np.percentile(line[np.isfinite(line)], [3, 92]))
+            for name in point_names:
+                for source in ax.lines:
+                    if source.get_gid() not in {'photometry:'+name, 'synthetic:'+name}:continue
+                    panel.plot(source.get_xdata(), source.get_ydata(), ls='none', marker=source.get_marker(),
+                               ms=5., mfc=source.get_markerfacecolor(), mec=source.get_markeredgecolor(), mew=1.)
+                    nuclear_values.extend(np.asarray(source.get_ydata())[np.isfinite(source.get_ydata())].tolist())
+                rows = [r for r in records if r['component'] == name]
+                actual = np.array([r['photometry_microjy'] for r in rows])
+                error = np.array([r['photometry_error_microjy'] for r in rows])
+                valid = np.isfinite(actual) & np.isfinite(error)
+                if valid.any():
+                    panel.errorbar(waves[valid], convert(actual)[valid], yerr=convert(error)[valid],
+                                   fmt='none', ecolor='#a54449', elinewidth=.7, capsize=2)
+            finite = np.asarray(nuclear_values)
+            low, high = np.percentile(finite, [3, 92]) if len(finite) else (0., 1.)
+            if segment_bounds:low=min(v[0] for v in segment_bounds);high=max(v[1] for v in segment_bounds)
+            band_values = [convert([result.fluxes[n][o.band] for o in observed]) for n in point_names]
+            low = min(low, 0., np.min(band_values));high = max(high, np.max(band_values))
+            pad = max((high-low)*.15, 1e-6)
+            panel.set(xscale='log', xlim=limits, ylim=(low-pad, high+pad))
+            panel.set_title('PSF: total - extended' if nuclear_spectra else 'PSF', fontsize=11, pad=4)
+            panel.xaxis.set_major_locator(FixedLocator([v for v in [.3, .6, 1., 1.5, 2., 2.5] if limits[0] <= v <= limits[1]]))
+            panel.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f'{x:g}'))
+            panel.xaxis.set_minor_formatter(NullFormatter())
+            panel.tick_params(labelsize=9);panel.set_xlabel('µm', fontsize=10, labelpad=1)
+            panel_ylimits['nucleus'] = list(panel.get_ylim())
+        if separate_components and extended:
+            # Each continuum zoom has its own limits; narrow peaks remain in overview.
+            count = len(extended)
+            for i, c in enumerate(extended):
+                if nuclear_detail:
+                    row, column = (0, 2) if i == 0 else (1+(i-1)//3, (i-1)%3)
+                    panel = fig.add_axes([.105+column*.875/3, .45-row*.20, .875/3*.88, .13])
+                else:panel = fig.add_axes([.105+i*.875/count, .33, .875/count*.88, .19])
+                color = COMPONENT_STYLES[i % len(COMPONENT_STYLES)][0]
+                continuum = [];photometric = []
+                for line in ax.lines:
+                    if line.get_gid() not in {'stellar-spectrum:'+c.name, 'photometry:'+c.name, 'synthetic:'+c.name}:continue
+                    panel.plot(line.get_xdata(), line.get_ydata(), color=line.get_color(),
+                               ls=line.get_linestyle(), lw=.65, marker=line.get_marker(),
+                               ms=5., mfc=line.get_markerfacecolor(), mec=line.get_markeredgecolor(), mew=1.)
+                    y = np.asarray(line.get_ydata());y = y[np.isfinite(y) & (y > 0)]
+                    if line.get_gid().startswith('stellar-spectrum:'):continuum.extend(y.tolist())
+                    else:photometric.extend(y.tolist())
+                rows = [r for r in records if r['component'] == c.name]
+                error = np.array([r['photometry_error_microjy'] for r in rows])
+                actual = np.array([r['photometry_microjy'] for r in rows])
+                good = np.isfinite(error) & np.isfinite(actual) & (actual > 0)
+                if good.any():panel.errorbar(waves[good], convert(actual)[good], yerr=convert(error)[good],
+                                            fmt='none', ecolor=color, elinewidth=.6, capsize=1.5)
+                base = np.asarray(continuum or photometric or [1.])
+                low, high = np.percentile(base, [3, 90])
+                if photometric:low=min(low,min(photometric));high=max(high,max(photometric))
+                if good.any():
+                    low_errors = convert(actual-error)[good]
+                    low = min(low, np.min(low_errors[low_errors > 0])) if np.any(low_errors > 0) else low
+                    high = max(high, np.max(convert(actual+error)[good]))
+                panel.set(xscale='log', yscale='log', xlim=limits, ylim=(max(low*.65, 1e-30), high*1.4))
+                panel.set_title(c.name, color=color, fontsize=11, pad=4)
+                panel.xaxis.set_major_locator(FixedLocator([v for v in [.3, .6, 1., 2.] if limits[0] <= v <= limits[1]]))
+                panel.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f'{x:g}'))
+                panel.xaxis.set_minor_formatter(NullFormatter())
+                panel.tick_params(labelsize=9)
+                ylo, yhi = panel.get_ylim()
+                candidates = np.array([m*10.**exponent for exponent in range(int(np.floor(np.log10(ylo))), int(np.ceil(np.log10(yhi)))+1)
+                                       for m in [1., 2., 5.] if ylo <= m*10.**exponent <= yhi])
+                if len(candidates) > 4:candidates = candidates[np.unique(np.round(np.linspace(0, len(candidates)-1, 4)).astype(int))]
+                panel.yaxis.set_major_locator(FixedLocator(candidates))
+                panel.yaxis.set_major_formatter(FuncFormatter(lambda y, pos: f'{y:g}'))
+                panel.yaxis.set_minor_formatter(NullFormatter())
+                panel.set_xlabel('µm', fontsize=10, labelpad=1)
+                panel_ylimits[c.name] = list(panel.get_ylim())
         directory = Path(directory);directory.mkdir(parents=True, exist_ok=True)
         note = ('Filled: measured free-band photometry; white/colored edge: model band predictions. '
                 'Stellar curves cover the full displayed range; context spectra are not fitted. '
@@ -268,6 +355,9 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                         photometry_source=photometry_source, measured_error_type='local linear covariance',
                         synthetic_style='white face, colored edge', measured_style='filled color',
                         nuclear_curves=False, total_stellar_curve=bool(spectra),
+                        separate_components=separate_components, spectrum_provenance=spectrum_provenance,
+                        panel_ylimits=panel_ylimits, nuclear_subtracted_spectra=bool(nuclear_spectra),
+                        detail_limit_policy='Continuum/photometry zoom; narrow line peaks may exceed detail limits. Nuclear residual shown on a linear axis, including negative values.',
                         xlim=list(ax.get_xlim()), ylim=list(ax.get_ylim()))
         if rgb is not None:settings['rgb'] = {k: v for k, v in rgb.items() if k != 'images'}
         (directory/(prefix+'_display.json')).write_text(json.dumps(settings, indent=2)+'\n')

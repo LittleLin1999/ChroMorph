@@ -149,6 +149,14 @@ additional validation before strong scientific conclusions.
   Extended and PSF-subtracted data use a common noise-aware intensity stretch
   without smoothing. `result.plot_sed(directory, ...)` accepts optional
   display-only spectra/photometry and redraws without refitting.
+  `separate_components=True` adds individual panels without shifting component
+  fluxes. An isolated post-fit FSPS backend can generate higher-resolution
+  spectra at the saved low-resolution optimum; its band fluxes are checked
+  against the actual likelihood predictions. See [post-fit spectra](docs/POSTFIT_SPECTRA.md).
+  The PSF detail panel can overlay an explicitly supplied total-minus-extended
+  spectrum at matched resolution. It uses a linear axis to retain negative
+  residuals; stellar detail limits follow each component's continuum and
+  photometry, rather than the tallest nebular line in another component.
 - Rank-deficient directions, near-bound solutions and local prior-information
   fractions are reported. Unidentifiable local errors are null, not zero.
   Local linear errors are insufficient for nonlinear or multimodal solutions;
