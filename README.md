@@ -140,6 +140,11 @@ additional validation before strong scientific conclusions.
   and correlations, PDF/PNG diagnostics, and a standalone HTML report.
 - Nuclear fluxes are plotted as independent band points. Physical spectra are
   plotted as curves. No nuclear smooth SED is assumed.
+- SED figures use pivot-equivalent observed f_lambda, filter-throughput curves
+  and an aligned RGB footer for the extended model, PSF and data minus PSF.
+  Extended and PSF-subtracted data use a common noise-aware intensity stretch
+  without smoothing. `result.plot_sed(directory, ...)` accepts optional
+  display-only spectra/photometry and redraws without refitting.
 - Rank-deficient directions, near-bound solutions and local prior-information
   fractions are reported. Unidentifiable local errors are null, not zero.
   Local linear errors are insufficient for nonlinear or multimodal solutions;

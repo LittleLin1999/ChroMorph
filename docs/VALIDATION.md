@@ -5,7 +5,7 @@ populations or unbiased decomposition for every real galaxy.
 
 ## Core and numerical checks
 
-The current local suite passes 67 tests, with four optional integration modules
+The current local suite passes 69 tests, with four optional integration modules
 skipped. It includes independent component namespaces, flux exchange and label
 switching, GalSim rendering, private empirical-PSF injections, exact filter
 integration, bounded variable projection, optimizer comparisons and SFH report
