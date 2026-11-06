@@ -9,6 +9,7 @@ import numpy as np
 from scipy.ndimage import map_coordinates
 from .sed import FreeBandSED
 from .spatial import PointSource
+from .grouping import component_groups
 
 C_ANGSTROM_S = 2.99792458e18
 COMPONENT_STYLES = [('#d18024', 'v'), ('#3179a1', '^'),
@@ -35,8 +36,8 @@ def component_rgbs(result, *, crop=None):
     observations = list({o.band: o for o in observations}.values())
     reference = scene.observations[0]
     yy, xx = np.indices(reference.data.shape, dtype=float)
-    points = [c.name for c in scene.components if isinstance(c, PointSource)]
-    extended = [c.name for c in scene.components if c.name not in points]
+    grouping = component_groups(scene.components)
+    points, extended = grouping['nucleus'], grouping['extended']
     if not points or not extended:return None
     aligned = {key: [] for key in ['total', 'extended', 'point', 'data_minus_psf']+['component:'+name for name in extended]}
     noise, validity = [], []
@@ -99,7 +100,7 @@ def component_rgbs(result, *, crop=None):
         bar_pixels, bar_label = .2/reference.pixel_scale, '0.2 arcsec'
     return dict(images=rgbs, crop=[int(v) for v in crop], bands=[o.band for o in observations],
                 bar_pixels=bar_pixels, bar_label=bar_label,
-                host_white=host_white, host_black=black, smoothing=False,
+                host_white=host_white, host_black=black, smoothing=False, component_grouping=grouping,
                 note='Extended/data-minus-PSF share a stretch; other model panels are individually scaled. Masked pixels are black.')
 
 
@@ -113,7 +114,7 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
 
     measured_fluxes/errors are nested component -> band -> microJy dictionaries,
     normally supplied by an independent free-band decomposition of the same data.
-    Aggregate errors may be supplied under __total__ and __stellar__; these
+    Aggregate errors may be supplied under __total__ and __extended__; these
     should include cross-component covariance. No physical nuclear curve is drawn.
     Context spectra/photometry are display-only. Filled points are photometry;
     white points with colored edges are fitted-model band predictions.
@@ -144,7 +145,8 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
     records = []
     with plt.rc_context(styles):
         rgb = component_rgbs(result, crop=rgb_crop)
-        has_point = any(isinstance(c, PointSource) for c in scene.components)
+        grouping = component_groups(scene.components)
+        has_point = bool(grouping['nucleus'])
         nuclear_detail = separate_components and has_point
         fig, ax = plt.subplots(figsize=(10.4, 10.5 if nuclear_detail else 9.5 if separate_components else 6.5), layout='constrained')
         for spectrum in context_spectra:
@@ -156,7 +158,7 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
             ax.errorbar(p['wave_micron'], p['scaled_flam'], yerr=p['error'], fmt='s', ms=5.5,
                         mfc='#56687a', mec='#56687a', color='#56687a', lw=.7, capsize=2,
                         label=p.get('label', 'Ground photometry'), zorder=3)
-        point_names = [c.name for c in scene.components if isinstance(c, PointSource)]
+        point_names = grouping['nucleus']
         extended = [c for c in scene.components if c.name not in point_names]
 
         def draw_points(key, names, color, marker, label, size=7.5):
@@ -186,8 +188,8 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
 
         draw_points('__total__', [c.name for c in scene.components], '#364d65', 's', 'HST total', 9.)
         if extended:
-            draw_points('__stellar__', [c.name for c in extended], '#167e72', 'D',
-                        'Total stellar' if physical else 'Extended', 8.)
+            draw_points('__extended__', [c.name for c in extended], '#167e72', 'D',
+                        'Extended (all non-nuclear)', 8.)
         spectra = []
         for c in scene.components:
             point = c.name in point_names
@@ -365,7 +367,7 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                         photometry_source=photometry_source, measured_error_type='local linear covariance',
                         synthetic_style='white face, colored edge', measured_style='filled color',
                         photometry_emphasis='Opaque filled foreground markers with dark edges/white halo and stronger errors; translucent hollow synthetic markers behind.',
-                        nuclear_curves=False, total_stellar_curve=bool(spectra),
+                        nuclear_curves=False, total_stellar_curve=bool(spectra), component_grouping=grouping,
                         separate_components=separate_components, spectrum_provenance=spectrum_provenance,
                         panel_ylimits=panel_ylimits, nuclear_subtracted_spectra=bool(nuclear_spectra),
                         detail_limit_policy='Continuum/photometry zoom; narrow line peaks may exceed detail limits. Nuclear residual shown on a linear axis, including negative values.',

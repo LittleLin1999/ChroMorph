@@ -11,7 +11,7 @@ class Parameter:
     lower: float = -np.inf
     upper: float = np.inf
     vary: bool = True
-    prior: tuple[float, float] | None = None
+    prior: object = None
 
     def __post_init__(self):
         if not np.isfinite(self.value) or self.lower > self.value or self.upper < self.value:
@@ -19,9 +19,17 @@ class Parameter:
         if self.vary and self.lower >= self.upper:
             raise ValueError("A varying parameter needs distinct bounds")
         if self.prior is not None:
-            object.__setattr__(self, 'prior', tuple(self.prior))
-            if len(self.prior) != 2 or not np.isfinite(self.prior).all() or self.prior[1] <= 0:
-                raise ValueError("Gaussian prior must have finite mean and positive sigma")
+            from .priors import prior_spec, prior_for, Prior
+            spec=prior_spec(self.prior)
+            if isinstance(self.prior,(dict,Prior)):
+                object.__setattr__(self,'prior',spec)
+            else:
+                object.__setattr__(self,'prior',tuple(self.prior))
+            if spec.distribution=='fixed':
+                if self.value!=spec.value:raise ValueError('Initial and fixed-prior values disagree')
+                object.__setattr__(self,'vary',False)
+            if not np.isfinite(prior_for(self).logpdf(self.value)):
+                raise ValueError('Initial value outside prior support')
 
 
 def identifier(name):
@@ -79,6 +87,11 @@ class Registry:
         for name in names:
             tied = [p for n, p in self.parameters.items() if self.resolve(n) == name]
             lo, hi = max(p.lower for p in tied), min(p.upper for p in tied)
+            from .priors import prior_spec
+            specs=[prior_spec(p.prior) for p in tied if p.prior is not None]
+            if specs:
+                lo=max([lo]+[p.lower for p in specs]);hi=min([hi]+[p.upper for p in specs])
+                if any(p.distribution=='lognormal' for p in specs):lo=max(0.,lo)
             if lo >= hi or not lo <= self.parameters[name].value <= hi:
                 raise ValueError(f"Incompatible bounds for tied parameter {name}")
             lower.append(lo); upper.append(hi)
@@ -99,6 +112,26 @@ class Registry:
         return values
 
     def prior_residuals(self, values):
-        return np.array([(values[n] - p.prior[0]) / p.prior[1]
-                         for n, p in self.parameters.items()
-                         if n not in self.ties and p.prior is not None])
+        from .priors import prior_for
+        names=[n for n,p in self.parameters.items() if n not in self.ties and p.vary and p.prior is not None]
+        if not names:return np.array([])
+        lo,hi=self.bounds(names)
+        return np.array([prior_for(self.parameters[n],a,b).residual(values[n]) for n,a,b in zip(names,lo,hi)])
+
+    def logprior(self, values):
+        from .priors import prior_for
+        names=self.names();lo,hi=self.bounds(names)
+        return float(sum(prior_for(self.parameters[n],a,b).logpdf(values[n]) for n,a,b in zip(names,lo,hi)))
+
+    def cost_groups(self, names=None):
+        """Highest dependency cost wins for explicitly tied parameters."""
+        names=self.names() if names is None else names
+        def cost(n):
+            if '.morphology.' in n or n.endswith(('.dx','.dy')):return 0
+            if '.sed.' in n and not n.endswith('.log_mass'):return 1
+            return 2
+        groups=[[],[],[]]
+        for n in names:
+            grade=min(cost(alias) for alias in self.parameters if self.resolve(alias)==n)
+            groups[grade].append(n)
+        return dict(zip(['slow','medium','fast'],groups))

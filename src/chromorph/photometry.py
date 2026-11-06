@@ -77,6 +77,17 @@ class BandpassThroughput:
             raise ValueError('Integrated spectrum must have positive finite flux')
         return value
 
+    def integration_weights(self,wavelength_angstrom):
+        """Validated linear photometry operator for whole SSP spectrum batches."""
+        wave=np.asarray(wavelength_angstrom,dtype=float)
+        cached=getattr(self,'_bulk_quadrature',None)
+        if cached is None or not np.array_equal(wave,cached[0]):
+            helper=BandpassThroughput(self.bandpass,integration='cached')
+            helper.microjy(wave,np.ones_like(wave))
+            weights=helper._quadrature[1].copy();weights.setflags(write=False)
+            self._bulk_quadrature=(wave.copy(),weights)
+        return self._bulk_quadrature[1]
+
     @property
     def pivot_angstrom(self):
         return float(self.bandpass.pivot().to_value(u.AA))

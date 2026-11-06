@@ -57,8 +57,10 @@ objects set bounds, fixed parameters, and independent Gaussian priors. A scalar
 in YAML means fixed; a parameter mapping varies unless `vary: false` is given.
 `scene.tie_centroids(['clump_1', 'clump_2'])` explicitly groups centroids;
 `scene.tie(alias, target)` ties other parameters. Nuclear band fluxes cannot be
-tied, fixed, given color priors or given finite upper bounds. All fluxes are
-nonnegative. SED instance reuse between components is rejected.
+tied, fixed or given spectral/color constraints. Independent, normalized
+statistical flux priors are supported, including finite-support priors for
+Bayesian evidence. All fluxes are nonnegative. SED instance reuse between
+components is rejected.
 
 The default physical SED uses **constant star formation**, with documented FSPS
 settings `sfh=1, const=1, fburst=0, sf_start=0`. Its `age`/`tage` is the duration
@@ -173,25 +175,32 @@ for numerical checks or reproducing an earlier optimization.
 
 Install the official [PolyChordLite](https://github.com/PolyChord/PolyChordLite)
 library and Python bindings with MPI and a Fortran compiler, plus
-`pip install '.[polychord]'`. Then run, for example:
+`pip install '.[polychord]'`. See [nuclear flux priors](docs/NUCLEAR_SED.md)
+for runnable prior configuration and the distinction between physical SED
+constraints and statistical amplitude priors.
 
-```sh
-mpiexec -n 24 chromorph sample-polychord examples/B_constant_sfr.yaml \
-  --output results/B_polychord --nlive 1300 --num-repeats 104 --precision 0.01
-```
+The default `sample-polychord` mode explicitly samples every free amplitude
+with its own normalized prior and returns posterior samples and Bayesian
+evidence. Configure proper priors for every sampled parameter, including each
+nuclear band. Uniform, Gaussian, truncated Gaussian and lognormal scalar
+priors are supported; no nuclear colors, templates, smoothness or cross-filter
+prior correlations are introduced. Check independent seeds, slice lengths,
+live-point counts and prior-width sensitivity before interpreting evidence.
 
-The supplied settings are illustrative for a 52-dimensional sampled model.
-Check independent seeds, slice lengths, live-point counts and prior sensitivity
-before interpreting a posterior. All non-nuclear sampled parameters need proper
-priors; configured Gaussian priors are transformed as bounded, normalized
-Gaussians and are not counted twice in the likelihood.
+For an explicitly chosen improper flat nonnegative nuclear measure, use
+`--nuclear-mode flat_marginal`. Supported nuclear amplitudes are analytically
+integrated, never profiled, and conditional draws restore their individual
+flux posteriors. Evidence is undefined only when an improper measure remains;
+that case is labeled `posterior_only` and has `log_evidence: null` in
+`inference.json`. A physically unconstrained nuclear SED alone does **not**
+prevent evidence calculation. The sampler never invents finite flux caps.
 
-The nucleus retains independent nonnegative fluxes with no upper limit or
-spectral prior. For the supported one-nucleus-per-band Gaussian likelihood,
-these amplitudes are analytically **integrated**, not maximized. Independent
-conditional truncated-normal draws restore the nuclear flux posterior in
-`posterior_with_nucleus.ecsv`. The weighted nonlinear posterior is also saved.
-This flat unbounded nuclear measure does not define an absolute Bayesian
-evidence; `inference.json` explicitly records `log_evidence: null`. PolyChord's
-internal log integral must not be used as a Bayes factor. Additional free-band
-components require explicit proper priors for their sampled amplitudes.
+Maximum-likelihood fitting remains available with
+`scene.fit(objective="ml")` or `fitting: {objective: ml}` in YAML. Statistical
+priors are ignored in this mode; explicitly configured hard numerical bounds
+and fixed morphology parameters still apply. Nuclear SED plots display
+independent band measurements without a fitted continuum.
+
+See [likelihood paths and experimental acceleration](docs/PERFORMANCE.md) for
+full-rendering dispatch, incremental statistics, template accuracy gates and
+reproducible benchmark commands.

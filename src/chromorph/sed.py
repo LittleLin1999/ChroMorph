@@ -89,6 +89,17 @@ def _evaluate_fsps(parameters):
     return np.array(wave, copy=True), np.array(luminosity, copy=True), float(_FSPS.formed_mass)
 
 
+def _evaluate_native_age_grid(parameters):
+    global _FSPS
+    parameters=dict(parameters);parameters.pop('tage',None)
+    for key,value in parameters.items():_FSPS.params[key]=value
+    wave,spectra=_FSPS.get_spectrum(tage=0.,peraa=True)
+    age=10**(np.asarray(_FSPS.log_age)-9)
+    mass=np.asarray(_FSPS.formed_mass)
+    if mass.ndim==0:mass=np.full(len(age),mass)
+    return np.array(wave,copy=True),np.array(spectra,copy=True),np.array(age,copy=True),np.array(mass,copy=True)
+
+
 class FSPSStellarSED:
     """Independent FSPS model in a dedicated process, mass = formed Msun.
 
@@ -164,18 +175,21 @@ class FSPSStellarSED:
         for key, p in self.parameters.items():
             registry.add(f"{name}.sed.{key}", p)
 
+    def _ensure_executor(self):
+        configuration_key = tuple(sorted(self.configuration.items()))
+        if self._executor is not None and self._executor_configuration != configuration_key:
+            self.close()
+        if self._executor is None:
+            self._executor = ProcessPoolExecutor(
+                max_workers=1, mp_context=multiprocessing.get_context("spawn"),
+                initializer=_initialize_fsps, initargs=(dict(self.configuration),))
+            self._executor_configuration = configuration_key
+
     def _spectrum(self, parameters):
         key = tuple(sorted(parameters.items())) + tuple(sorted(self.configuration.items()))
         cached = self._cache.get(key)
         if cached is None:
-            configuration_key = tuple(sorted(self.configuration.items()))
-            if self._executor is not None and self._executor_configuration != configuration_key:
-                self.close()
-            if self._executor is None:
-                self._executor = ProcessPoolExecutor(
-                    max_workers=1, mp_context=multiprocessing.get_context("spawn"),
-                    initializer=_initialize_fsps, initargs=(dict(self.configuration),))
-                self._executor_configuration = configuration_key
+            self._ensure_executor()
             wave, spec, formed_mass = self._executor.submit(_evaluate_fsps, dict(parameters)).result()
             self.metrics['fsps_calls'] += 1
             if formed_mass <= 0 or not np.isfinite(spec).all():
@@ -189,11 +203,7 @@ class FSPSStellarSED:
         return (tuple((k, values[f'{name}.sed.{k}']) for k in self.parameters if k != 'log_mass'),
                 tuple(sorted(self.configuration.items())), self.dust, self.nebular, self.sfh, context)
 
-    def spectrum_per_mass(self, values, name, context):
-        key = self._shape_key(values, name, context)
-        cached = self._observed_cache.get(key)
-        if cached is not None:
-            return cached
+    def _physical_parameters(self,values,name,context):
         p = {k: values[f"{name}.sed.{k}"] for k in self.parameters if k != 'log_mass'}
         if context.redshift > 0 and p['age'] > context.age_limit_gyr():
             raise ValueError("Stellar age exceeds the age of the Universe at source redshift")
@@ -203,7 +213,9 @@ class FSPSStellarSED:
                                gas_logu=p.get('gas_logu', -2.))
         if 'tau' in p:
             fsps_parameters['tau'] = p['tau']
-        wave, luminosity_per_mass = self._spectrum(fsps_parameters)
+        return fsps_parameters
+
+    def _observed_spectrum(self,wave,luminosity_per_mass,context):
         observed_wave = wave*(1+context.redshift)
         flam = luminosity_per_mass*context.luminosity_to_observed_flam()
         if context.foreground_av:
@@ -211,12 +223,33 @@ class FSPSStellarSED:
             law = CCM89(Rv=context.foreground_rv)
             inverse_um = 1e4/observed_wave
             covered = (inverse_um >= law.x_range[0]) & (inverse_um <= law.x_range[1])
-            observed_wave, flam = observed_wave[covered], flam[covered]
+            observed_wave, flam = observed_wave[covered], flam[...,covered]
             flam = flam * law.extinguish(observed_wave*u.AA, Av=context.foreground_av)
+        return observed_wave,flam
+
+    def spectrum_per_mass(self, values, name, context):
+        key = self._shape_key(values, name, context)
+        cached = self._observed_cache.get(key)
+        if cached is not None:
+            return cached
+        fsps_parameters=self._physical_parameters(values,name,context)
+        wave, luminosity_per_mass = self._spectrum(fsps_parameters)
+        observed_wave,flam=self._observed_spectrum(wave,luminosity_per_mass,context)
         observed_wave.setflags(write=False);flam.setflags(write=False)
         cached = (observed_wave, flam)
         self._observed_cache[key] = cached
         return cached
+
+    def native_ssp_grid(self,values,name,context):
+        """Public FSPS full-age output, normalized to formed stellar mass."""
+        if self.sfh not in {'ssp','young','old'}:raise ValueError('Native SSP grids require an SSP reference')
+        self._ensure_executor()
+        wave,spectra,ages,mass=self._executor.submit(_evaluate_native_age_grid,
+            self._physical_parameters(values,name,context)).result()
+        self.metrics['fsps_calls']+=1
+        if spectra.shape!=(len(ages),len(wave)) or np.any(mass<=0):raise ValueError('Invalid native FSPS age grid')
+        observed,flam=self._observed_spectrum(wave,spectra/mass[:,None],context)
+        return observed,flam,ages
 
     def spectrum(self, values, name, context):
         wave, flam = self.spectrum_per_mass(values, name, context)
