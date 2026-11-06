@@ -1,8 +1,7 @@
-"""A single image likelihood over every observation and spatial/SED component."""
+"""Declarative joint scene with thin fitting/evaluation conveniences."""
 from __future__ import annotations
 from dataclasses import replace
 import numpy as np
-from scipy.optimize import least_squares, nnls
 from astropy import units as u
 from astropy.cosmology import Planck18
 from .parameters import Registry, Parameter, identifier
@@ -22,16 +21,10 @@ class Scene:
         # always allowed and never specify a nuclear spectral shape.
         self.allow_nuclear_flux_priors = bool(allow_nuclear_flux_priors)
         self.sed_workers=int(sed_workers)
-        self._spectral_engine=None
-        self.renderer = renderer
+        self._renderer = renderer
+        self.cache_bytes = int(cache_bytes)
+        self._evaluator = None
         self.components = []
-        from .cache import ExactLRU
-        self._basis_cache = ExactLRU(cache_bytes)
-        self._compressed = None
-        self._gaussian_cache = ExactLRU(cache_bytes//2)
-        self._gaussian_tokens = {}
-        self._likelihood_engines = {}
-        self.metrics = dict(render_calls=0)
         self.registry = Registry()
         for index, o in enumerate(self.observations):
             identifier(o.name)
@@ -118,263 +111,57 @@ class Scene:
                 for axis in ['x', 'y']:
                     self.tie(f"{name}.morphology.{axis}", f"{anchor}.morphology.{axis}")
 
-    def _ensure_renderer(self):
-        if self.renderer is None:
-            from .rendering import GalSimRenderer
-            self.renderer = GalSimRenderer()
-
-    def morphology(self, component, values):
-        return {key: values[f"{component.name}.morphology.{key}"] for key in component.parameters}
-
-    def spatial_key(self, component, observation, values):
-        self._ensure_renderer()
-        morphology = self.morphology(component, values)
-        shift = tuple(values[f'observation.{observation.name}.{axis}'] for axis in ['dx', 'dy'])
-        psf = observation.psf
-        renderer_key = getattr(self.renderer, 'cache_token', lambda: id(self.renderer))()
-        return (component.name, type(component).__name__, renderer_key,
-                tuple(sorted(morphology.items())), shift, tuple(observation.matrix.ravel()),
-                tuple(observation.offset), observation.data.shape, psf.cache_token())
-
-    def basis_observation(self, observation, values):
-        self._ensure_renderer()
-        result = {}
-        shift = np.array([values[f'observation.{observation.name}.{axis}'] for axis in ['dx', 'dy']])
-        for component in self.components:
-            key = self.spatial_key(component, observation, values)
-            cache_id = (observation.name, key)
-            cached = self._basis_cache.get(cache_id)
-            if cached is None:
-                image = np.asarray(self.renderer.render(component, self.morphology(component, values), observation, shift), dtype=float)
-                self.metrics['render_calls'] += 1
-                image.setflags(write=False)
-                cached = image
-                self._basis_cache[cache_id] = cached
-            result[component.name] = cached
-        return result
-
-    def basis(self, values):
-        return {o.name: self.basis_observation(o, values) for o in self.observations}
+    def prepare(self):
+        """Return the process-local evaluator; no model approximation or JIT."""
+        from .execution import PreparedEvaluator
+        if self._evaluator is None or self._evaluator.closed:
+            self._evaluator = PreparedEvaluator(self)
+        return self._evaluator
 
     @property
-    def compressed(self):
-        if self._compressed is None:
-            from .likelihood import CompressedGaussianLikelihood
-            self._compressed = CompressedGaussianLikelihood(self)
-        return self._compressed
+    def renderer(self):
+        return self._renderer if self._evaluator is None else self._evaluator.renderer
 
-    def component_fluxes(self,values):
-        from .spectral import SpectralEngine
-        if self._spectral_engine is None:self._spectral_engine=SpectralEngine(self,workers=self.sed_workers)
-        return self._spectral_engine.fluxes(values)
+    @renderer.setter
+    def renderer(self, value):
+        self._renderer = value
+        if self._evaluator is not None:
+            self._evaluator.renderer = value
+            self._evaluator._basis_cache.clear()
+            self._evaluator._compressed = None
+            self._evaluator._likelihood_engines.clear()
+
+    @property
+    def metrics(self): return self.prepare().metrics
+
+    @property
+    def compressed(self): return self.prepare().compressed
 
     def __getstate__(self):
-        state=dict(self.__dict__);state['_spectral_engine']=None;state['_likelihood_engines']={}
+        state = dict(self.__dict__)
+        state['_evaluator'] = None
         return state
 
-    def predict(self, values=None, *, basis=None):
-        if not self.components:
-            raise ValueError("Scene has no components")
-        values = self.registry.unpack() if values is None else values
-        basis = self.basis(values) if basis is None else basis
-        fluxes = self.component_fluxes(values)
-        if any(not np.isfinite(v) or v < 0 for bands in fluxes.values() for v in bands.values()):
-            raise ValueError("SED must predict finite nonnegative microJy fluxes")
-        images, models = {}, {}
-        for o in self.observations:
-            calibration = np.exp(values[f"observation.{o.name}.log_calibration"])
-            images[o.name] = {c.name: basis[o.name][c.name]*fluxes[c.name][o.band]/o.ujy_per_rate*calibration
-                              for c in self.components}
-            sky = values[f"observation.{o.name}.background"]
-            models[o.name] = np.full(o.data.shape, sky) + sum(images[o.name].values())
-        return models, images, fluxes
-
+    def _ensure_renderer(self): return self.prepare()._ensure_renderer()
+    def morphology(self, component, values): return self.prepare().morphology(component, values)
+    def spatial_key(self, component, observation, values): return self.prepare().spatial_key(component, observation, values)
+    def basis_observation(self, observation, values): return self.prepare().basis_observation(observation, values)
+    def basis(self, values): return self.prepare().basis(values)
+    def component_fluxes(self, values): return self.prepare().component_fluxes(values)
+    def predict(self, values=None, *, basis=None): return self.prepare().predict(values, basis=basis)
     def residual(self, values, *, basis=None, include_priors=True):
-        models, _, _ = self.predict(values, basis=basis)
-        from .noise import whitening_for
-        data = np.concatenate([whitening_for(o).whiten((o.data-models[o.name])[o.mask])
-                               for o in self.observations])
-        if not np.isfinite(data).all():
-            raise ValueError("Nonfinite likelihood")
-        return np.r_[data, self.registry.prior_residuals(values)] if include_priors else data
-
-    def pixel_loglikelihood(self, values):
-        from .noise import whitening_for
-        residual = self.residual(values, include_priors=False)
-        return float(sum(whitening_for(o).log_normalization for o in self.observations)
-                     -.5*(residual@residual))
-
+        return self.prepare().residual(values, basis=basis, include_priors=include_priors)
+    def pixel_loglikelihood(self, values): return self.prepare().pixel_loglikelihood(values)
+    def gaussian_data(self, observation): return self.prepare().gaussian_data(observation)
+    def loglikelihood(self, values=None, *, mode='auto'): return self.prepare().loglikelihood(values, mode=mode)
+    def _eligible_linear(self): return self.prepare()._eligible_linear()
+    def project(self, values, eligible, basis): return self.prepare().project(values, eligible, basis)
     def clear_caches(self):
-        if self._spectral_engine is not None:self._spectral_engine.close();self._spectral_engine=None
-        self._basis_cache.clear()
-        self._gaussian_cache.clear()
-        self._gaussian_tokens.clear()
-        self._likelihood_engines.clear()
-        self._compressed = None
-
-    def gaussian_data(self, observation):
-        """Reuse only parameter-independent whitening and data statistics."""
-        from .noise import whitening_for
-        from .direct import FixedGaussianData
-        token = observation.likelihood_token()
-        if self._gaussian_tokens.get(observation.name) != token:
-            observation.freeze()
-            token = observation.likelihood_token()
-            self._gaussian_tokens[observation.name] = token
-        key = (observation.name, token)
-        fixed = self._gaussian_cache.get(key)
-        if fixed is None:
-            whitening = whitening_for(observation)
-            target = whitening.whiten(observation.data[observation.mask])
-            target.setflags(write=False)
-            fixed = FixedGaussianData(token, whitening, target)
-            self._gaussian_cache[key] = fixed
-        return fixed
-
-    def loglikelihood(self, values=None, *, mode='auto'):
-        """Normalized Gaussian likelihood, without profiling nuisance parameters."""
-        from .direct import FullPixelLikelihood, AutoGaussianLikelihood
-        values = self.registry.unpack() if values is None else values
-        if mode == 'compressed':return self.compressed.loglikelihood(values)
-        if mode not in {'auto','full'}:raise ValueError('Use auto, full or compressed')
-        if mode not in self._likelihood_engines:
-            self._likelihood_engines[mode] = (FullPixelLikelihood(self) if mode=='full' else AutoGaussianLikelihood(self))
-        return self._likelihood_engines[mode].loglikelihood(values)
-
-    def _eligible_linear(self):
-        linked = set(self.registry.ties) | set(self.registry.ties.values())
-        return [n for c in self.components if isinstance(c.sed, FreeBandSED)
-                for band in self.bands for n in [f"{c.name}.flux.{band}"]
-                if n not in linked and self.registry.parameters[n].vary
-                and self.registry.parameters[n].prior is None
-                and self.registry.parameters[n].lower == 0
-                and not np.isfinite(self.registry.parameters[n].upper)]
-
-    def project(self, values, eligible, basis):
-        """One NNLS over all images; only eligible linear fluxes are eliminated."""
-        if not eligible:
-            return values
-        base = dict(values)
-        for n in eligible:
-            base[n] = 0.
-        baseline, _, _ = self.predict(base, basis=basis)
-        from .noise import whitening_for
-        whiteners = {o.name: whitening_for(o) for o in self.observations}
-        target = np.concatenate([whiteners[o.name].whiten((o.data-baseline[o.name])[o.mask])
-                                 for o in self.observations])
-        design = np.zeros((len(target), len(eligible)))
-        row = 0
-        for o in self.observations:
-            count = o.mask.sum()
-            for col, name in enumerate(eligible):
-                component, _, band = name.split('.')
-                if band == o.band:
-                    rate = np.exp(values[f"observation.{o.name}.log_calibration"])/o.ujy_per_rate
-                    design[row:row+count, col] = whiteners[o.name].whiten((basis[o.name][component]*rate)[o.mask])
-            row += count
-        fluxes, _ = nnls(design, target, maxiter=max(100, 10*len(eligible)))
-        updated = dict(values)
-        updated.update(zip(eligible, map(float, fluxes)))
-        return updated
+        if self._evaluator is not None: self._evaluator.clear_caches()
 
     def fit(self, *, objective='map', **options):
-        """MAP with configured priors, or ML with statistical priors ignored.
-
-        Numerical bounds and explicitly fixed parameters still apply in ML.
-        A proper nuclear prior can therefore be used for Bayesian evidence
-        without limiting an ML amplitude through that statistical prior.
-        """
-        from dataclasses import asdict
-        self.validate_nuclear_seds()
-        if objective not in {'map','ml'}:raise ValueError('Use map or ml objective')
-        configured=self.registry.parameters
-        if objective=='ml':self.registry.parameters={n:replace(p,prior=None) for n,p in configured.items()}
-        try:
-            result=self._fit_implementation(**options)
-            result.objective_mode=objective
-            result.parameter_definitions_snapshot={n:asdict(p) for n,p in self.registry.parameters.items()}
-        finally:
-            self.registry.parameters=configured
-        return result
-
-    def _fit_implementation(self, *, multistart=3, seed=0, max_nfev=300, variable_projection=True,
-            workers=1, likelihood='compressed', optimizer='trf', project_stellar_mass=True,
-            estimate_uncertainty=True, checkpoint_directory=None, tolerance=1e-7):
-        if likelihood == 'pixel':
-            if optimizer != 'trf':
-                raise ValueError('Pixel reference fitting supports trf; use compressed for L-BFGS-B')
-            return self._fit_reference(multistart=multistart, seed=seed, max_nfev=max_nfev,
-                                       variable_projection=variable_projection, workers=workers)
-        if likelihood != 'compressed':
-            raise ValueError('likelihood must be compressed or pixel')
-        if workers != 1:
-            raise ValueError('Compressed fitting uses one dependency-aware scene; parallelize independent models or use likelihood="pixel" for parallel rendering derivatives')
-        from .optimize import fit_scene
-        return fit_scene(self, optimizer=optimizer, multistart=multistart, seed=seed,
-            max_nfev=max_nfev, variable_projection=variable_projection,
-            project_stellar_mass=project_stellar_mass, estimate_uncertainty=estimate_uncertainty,
-            checkpoint_directory=checkpoint_directory, tolerance=tolerance)
-
-    def _fit_reference(self, *, multistart=3, seed=0, max_nfev=300, variable_projection=True, workers=1):
-        from .result import FitResult
-        if not self.components:
-            raise ValueError("Scene has no components")
-        multistart = (3 if multistart else 1) if isinstance(multistart, bool) else multistart
-        if int(multistart) < 1:
-            raise ValueError("multistart must be positive")
-        registry = self.registry
-        eligible = self._eligible_linear() if variable_projection else []
-        names = registry.names(exclude=eligible)
-        lo, hi = registry.bounds(names)
-        initial = registry.initial(names)
-        def decode(x):
-            v = registry.unpack(x, names)
-            basis = self.basis(v)
-            return self.project(v, eligible, basis), basis
-        def objective(x):
-            v, basis = decode(x)
-            return self.residual(v, basis=basis)
-        objective(initial)  # dependency/configuration errors are never swallowed
-        worker_map = None
-        if workers != 1:
-            if not isinstance(workers, int) or workers < 1:
-                raise ValueError('workers must be a positive integer')
-            from .parallel import JacobianWorkers
-            worker_map = JacobianWorkers(self, names, eligible, workers)
-        rng = np.random.default_rng(seed)
-        runs = []
-        try:
-            for index in range(int(multistart)):
-                start = initial.copy()
-                if index:
-                    width = np.where(np.isfinite(lo) & np.isfinite(hi), hi-lo, np.maximum(abs(initial), 1.))
-                    start += rng.normal(0, .15, len(start))*width
-                    start = np.maximum(np.minimum(start, hi-1e-9), lo+1e-9)
-                if names:
-                    extra = {} if worker_map is None else dict(workers=worker_map)
-                    fit = least_squares(objective, start, bounds=(lo, hi), x_scale='jac',
-                                        diff_step=1e-4, ftol=1e-7, xtol=1e-7, gtol=1e-7,
-                                        max_nfev=max_nfev, **extra)
-                    vector, success, message, nfev = fit.x, bool(fit.success), fit.message, fit.nfev
-                else:
-                    vector, success, message, nfev = start, True, 'Linear solve only', 1
-                values, _ = decode(vector)
-                residual = self.residual(values)
-                runs.append(dict(values=values, objective=float(residual@residual),
-                                 success=success, message=str(message), nfev=int(nfev)))
-        finally:
-            if worker_map is not None:
-                worker_map.close()
-        best = min(runs, key=lambda r: r['objective'])
-        result = FitResult(self, best['values'], runs, eligible)
-        result.estimate_uncertainty()
-        return result
-
-    def close(self):
-        if self._spectral_engine is not None:self._spectral_engine.close();self._spectral_engine=None
-        for c in self.components:
-            if hasattr(c.sed, 'close'):
-                c.sed.close()
+        from .optimize import fit_model
+        return fit_model(self, objective=objective, **options)
 
     def sample_polychord(self, directory, *, nuclear_mode='sample', likelihood='auto', **options):
         """Sample all nuisance parameters; improper-flat marginalization is opt-in."""
@@ -384,8 +171,24 @@ class Scene:
         else:raise ValueError('Use sample or flat_marginal nuclear mode')
         return sampler.run(directory, **options)
 
-    def __enter__(self):
-        return self
+    def close(self):
+        if self._evaluator is not None:
+            self._evaluator.close()
+            self._evaluator = None
+        else:
+            for component in self.components:
+                if hasattr(component.sed, 'close'): component.sed.close()
 
-    def __exit__(self, *args):
-        self.close()
+    def __enter__(self): return self
+    def __exit__(self, *args): self.close()
+
+
+def _workspace_property(name):
+    """Temporary private compatibility views, never a second execution state."""
+    return property(lambda model: getattr(model.prepare(), name),
+                    lambda model, value: setattr(model.prepare(), name, value))
+
+
+for _name in ['_basis_cache', '_compressed', '_gaussian_cache', '_gaussian_tokens',
+              '_spectral_engine', '_likelihood_engines']:
+    setattr(Scene, _name, _workspace_property(_name))

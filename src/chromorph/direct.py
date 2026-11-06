@@ -1,20 +1,7 @@
 """Exact full-pixel Gaussian evaluation, independent of spatial compression."""
-from dataclasses import dataclass
+from .gaussian import FixedGaussianData
 import time
 import numpy as np
-
-
-@dataclass
-class FixedGaussianData:
-    token: tuple
-    whitening: object
-    target: np.ndarray
-
-    @property
-    def nbytes(self):
-        factor = getattr(self.whitening, 'factor', np.empty(0))
-        sigma = getattr(self.whitening, 'sigma', np.empty(0))
-        return self.target.nbytes+factor.nbytes+sigma.nbytes+256
 
 
 class FullPixelLikelihood:
@@ -25,7 +12,7 @@ class FullPixelLikelihood:
     No Gram matrix or spatial-template cache is required for this path.
     """
     def __init__(self, scene, *, retain_templates=False):
-        self.scene = scene
+        self.scene = scene.prepare()
         self.retain_templates = bool(retain_templates)
         self.metrics = dict(likelihood_calls=0, render_calls=0, seconds=0.)
 
@@ -70,7 +57,7 @@ class FullPixelLikelihood:
         amplitude per band is supported; all other parameters remain explicit.
         The flat unbounded nuclear measure does not define absolute evidence.
         """
-        from .inference import marginal_linear_flux
+        from .gaussian import marginal_linear_flux
         start=time.perf_counter();scene=self.scene;values=dict(values)
         for name in linear:values[name]=0.
         by_band={n.split('.')[-1]:n for n in linear}

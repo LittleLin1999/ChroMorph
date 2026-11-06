@@ -1,5 +1,6 @@
 """Deterministic joint fitting with stable amplitude variable projection."""
 import json
+from dataclasses import replace, asdict
 from pathlib import Path
 import time
 import numpy as np
@@ -121,4 +122,99 @@ def fit_scene(scene, *, optimizer='trf', multistart=3, seed=0, max_nfev=300,
         result.identifiability = dict(rank=None, data_rank=None, null_modes=[], near_bounds=[],
                                       prior_information_fraction={})
         result.warnings.append('Uncertainties were not estimated in this discovery fit.')
+    return result
+
+
+def fit_model(scene, *, objective='map', **options):
+    """MAP with configured priors, or ML with statistical priors ignored.
+
+    Numerical bounds and explicitly fixed parameters still apply in ML.
+    A proper nuclear prior can therefore be used for Bayesian evidence
+    without limiting an ML amplitude through that statistical prior.
+    """
+    from dataclasses import asdict
+    scene.validate_nuclear_seds()
+    if objective not in {'map','ml'}:raise ValueError('Use map or ml objective')
+    configured=scene.registry.parameters
+    if objective=='ml':scene.registry.parameters={n:replace(p,prior=None) for n,p in configured.items()}
+    try:
+        result=_fit_implementation(scene, **options)
+        result.objective_mode=objective
+        result.parameter_definitions_snapshot={n:asdict(p) for n,p in scene.registry.parameters.items()}
+    finally:
+        scene.registry.parameters=configured
+    return result
+
+
+def _fit_implementation(scene, *, multistart=3, seed=0, max_nfev=300, variable_projection=True,
+        workers=1, likelihood='compressed', optimizer='trf', project_stellar_mass=True,
+        estimate_uncertainty=True, checkpoint_directory=None, tolerance=1e-7):
+    if likelihood == 'pixel':
+        if optimizer != 'trf':
+            raise ValueError('Pixel reference fitting supports trf; use compressed for L-BFGS-B')
+        return _fit_reference(scene, multistart=multistart, seed=seed, max_nfev=max_nfev,
+                                   variable_projection=variable_projection, workers=workers)
+    if likelihood != 'compressed':
+        raise ValueError('likelihood must be compressed or pixel')
+    if workers != 1:
+        raise ValueError('Compressed fitting uses one dependency-aware scene; parallelize independent models or use likelihood="pixel" for parallel rendering derivatives')
+    return fit_scene(scene, optimizer=optimizer, multistart=multistart, seed=seed,
+        max_nfev=max_nfev, variable_projection=variable_projection,
+        project_stellar_mass=project_stellar_mass, estimate_uncertainty=estimate_uncertainty,
+        checkpoint_directory=checkpoint_directory, tolerance=tolerance)
+
+
+def _fit_reference(scene, *, multistart=3, seed=0, max_nfev=300, variable_projection=True, workers=1):
+    from .result import FitResult
+    if not scene.components:
+        raise ValueError("Scene has no components")
+    multistart = (3 if multistart else 1) if isinstance(multistart, bool) else multistart
+    if int(multistart) < 1:
+        raise ValueError("multistart must be positive")
+    registry = scene.registry
+    eligible = scene._eligible_linear() if variable_projection else []
+    names = registry.names(exclude=eligible)
+    lo, hi = registry.bounds(names)
+    initial = registry.initial(names)
+    def decode(x):
+        v = registry.unpack(x, names)
+        basis = scene.basis(v)
+        return scene.project(v, eligible, basis), basis
+    def objective(x):
+        v, basis = decode(x)
+        return scene.residual(v, basis=basis)
+    objective(initial)  # dependency/configuration errors are never swallowed
+    worker_map = None
+    if workers != 1:
+        if not isinstance(workers, int) or workers < 1:
+            raise ValueError('workers must be a positive integer')
+        from .parallel import JacobianWorkers
+        worker_map = JacobianWorkers(scene, names, eligible, workers)
+    rng = np.random.default_rng(seed)
+    runs = []
+    try:
+        for index in range(int(multistart)):
+            start = initial.copy()
+            if index:
+                width = np.where(np.isfinite(lo) & np.isfinite(hi), hi-lo, np.maximum(abs(initial), 1.))
+                start += rng.normal(0, .15, len(start))*width
+                start = np.maximum(np.minimum(start, hi-1e-9), lo+1e-9)
+            if names:
+                extra = {} if worker_map is None else dict(workers=worker_map)
+                fit = least_squares(objective, start, bounds=(lo, hi), x_scale='jac',
+                                    diff_step=1e-4, ftol=1e-7, xtol=1e-7, gtol=1e-7,
+                                    max_nfev=max_nfev, **extra)
+                vector, success, message, nfev = fit.x, bool(fit.success), fit.message, fit.nfev
+            else:
+                vector, success, message, nfev = start, True, 'Linear solve only', 1
+            values, _ = decode(vector)
+            residual = scene.residual(values)
+            runs.append(dict(values=values, objective=float(residual@residual),
+                             success=success, message=str(message), nfev=int(nfev)))
+    finally:
+        if worker_map is not None:
+            worker_map.close()
+    best = min(runs, key=lambda r: r['objective'])
+    result = FitResult(scene, best['values'], runs, eligible)
+    result.estimate_uncertainty()
     return result

@@ -78,7 +78,7 @@ class SpatialStatisticsState:
 class CompressedGaussianLikelihood:
     def __init__(self, scene, *, incremental=True, state_cache_bytes=64*1024**2):
         from .cache import ExactLRU
-        self.scene = scene
+        self.scene = scene.prepare()
         self.incremental = bool(incremental)
         self._statistics = ExactLRU(8*1024**2)
         self._states = ExactLRU(state_cache_bytes)
