@@ -8,7 +8,7 @@ import sys
 import numpy as np
 import yaml
 from .config import load_config, build_scene
-from .discovery import discover_j1042, attach_hst_throughputs, TARGET
+from .io import load_observations
 from .result import _json
 from .sed import SEDContext
 
@@ -41,7 +41,7 @@ def example_configs(report):
                 pars[name]['max'] = min(6.2, pars[name]['max'])
         components.append(dict(name='nucleus' if c['type'] == 'point' else c['id'], spatial=c['type'],
                                nuclear=c['type'] == 'point', sed=dict(model='free'), parameters=pars))
-    base = dict(target=TARGET, data_root=report['root'],
+    base = dict(target=report.get('target', 'example'), data_root=report['root'],
                 morphology=dict(wavelength_mode='constant', centroid_mode='independent', renderer='galsim'),
                 psf=dict(source='empirical_v2', already_drizzled=True),
                 context={} if report['redshift'] is None else dict(redshift=report['redshift']),
@@ -72,19 +72,15 @@ def fit_options(config):
 
 
 def observations_for(config):
-    if config.get('target', TARGET) not in ['J1042', TARGET]:
-        raise ValueError('The built-in discovery CLI currently supports J1042; use Observation/Scene for other targets')
-    observations, report = discover_j1042(config['data_root'], metadata=config.get('metadata'))
-    if report['blockers']:
-        raise ValueError('Input QA failed: '+ '; '.join(report['blockers']))
+    manifest = config.get('observations')
+    if manifest is None:
+        manifest = Path(config.get('data_root', '.'))/'observations.yaml'
     stellar = any(c['sed']['model'] == 'fsps' for c in config['components'])
-    if stellar:
-        attach_hst_throughputs(observations, config.get('throughputs'))
-        if report['redshift'] is None and not config.get('context', {}).get('distance_mpc'):
-            raise ValueError('Physical SED requires measured redshift or distance')
-    context = dict(config.get('context', {}))
-    if 'redshift' not in context and report['redshift'] is not None:
-        context['redshift'] = report['redshift']
+    observations, report, defaults = load_observations(manifest, throughputs=stellar)
+    if stellar and any(o.throughput is None for o in observations):
+        raise ValueError('Physical SED components require an explicit throughput for every observation')
+    context = dict(defaults)
+    context.update(config.get('context', {}))
     return observations, report, SEDContext(**context)
 
 
@@ -109,11 +105,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog='chromorph')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('doctor')
-    discover = commands.add_parser('discover-j1042')
-    discover.add_argument('root', type=Path)
-    discover.add_argument('--metadata', type=Path)
-    discover.add_argument('--output', type=Path, required=True)
-    discover.add_argument('--config-dir', type=Path)
+    inspect = commands.add_parser('inspect')
+    inspect.add_argument('manifest', type=Path)
+    inspect.add_argument('--output', type=Path)
     fit = commands.add_parser('fit')
     fit.add_argument('config', type=Path); fit.add_argument('--output', type=Path, required=True)
     sample = commands.add_parser('sample-polychord')
@@ -131,15 +125,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == 'doctor':
         print(json.dumps(doctor(), indent=2)); return
-    if args.command == 'discover-j1042':
-        _, report = discover_j1042(args.root, metadata=args.metadata)
-        args.output.parent.mkdir(parents=True, exist_ok=True); _dump(args.output, report)
-        if args.config_dir:
-            args.config_dir.mkdir(parents=True, exist_ok=True)
-            for mode, config in example_configs(report).items():
-                (args.config_dir/(mode+'.yaml')).write_text(yaml.safe_dump(config, sort_keys=False))
-        print(json.dumps(dict(filters=[f['band'] for f in report['filters']], blockers=report['blockers'], redshift=report['redshift']), indent=2))
-        return
+    if args.command == 'inspect':
+        _, report, _ = load_observations(args.manifest, throughputs=False)
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            _dump(args.output, report)
+        print(json.dumps(_json(report), indent=2)); return
     if args.command == 'fit':
         result = run_fit(load_config(args.config), args.output)
         print(json.dumps(_json(result), indent=2)); return

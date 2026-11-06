@@ -1,6 +1,6 @@
 # Illustrative configuration; regenerate against validated target data.
-target: J1042
-data_root: /home/linxiaojing/data/lrd-squared/hst
+target: example
+observations: observations.yaml
 morphology:
   wavelength_mode: constant
   centroid_mode: independent

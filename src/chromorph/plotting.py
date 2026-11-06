@@ -176,7 +176,7 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                                 fmt='none', ecolor=color, elinewidth=1., capsize=2.5, zorder=8)
             if physical:
                 line, = ax.plot(waves, np.where(model > 0, convert(model), np.nan), ls='none',
-                    marker='o', ms=size+2., mfc='white', mec=color, mew=.85, alpha=.6,
+                    marker='o', ms=size+4., mfc='white', mec=color, mew=1.5, alpha=.7,
                     label=label if actual is None else None, zorder=6)
                 line.set_gid('synthetic:'+key)
             for i, o in enumerate(observed):
@@ -237,7 +237,7 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                     ha='center', va='bottom', fontsize=9)
         handles, labels = ax.get_legend_handles_labels()
         if physical:
-            handles.append(Line2D([], [], ls='none', marker='o', ms=8., mfc='white', mec='#333333', mew=.85, alpha=.6))
+            handles.append(Line2D([], [], ls='none', marker='o', ms=10., mfc='white', mec='#333333', mew=1.5, alpha=.7))
             labels.append('Synthetic')
         legend = ax.legend(handles, labels, loc='upper right', ncol=2, fontsize=9, frameon=False,
                            labelspacing=.35, columnspacing=1.2, handletextpad=.45)
@@ -276,9 +276,9 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                     if source.get_gid() not in {'photometry:'+name, 'synthetic:'+name}:continue
                     synthetic = source.get_gid().startswith('synthetic:')
                     copied, = panel.plot(source.get_xdata(), source.get_ydata(), ls='none', marker=source.get_marker(),
-                               ms=9.5 if synthetic else 7.5, mfc=source.get_markerfacecolor(),
-                               mec=source.get_markeredgecolor(), mew=.8 if synthetic else 1.1,
-                               zorder=source.get_zorder(), alpha=.6 if synthetic else 1.)
+                               ms=11.5 if synthetic else 7.5, mfc=source.get_markerfacecolor(),
+                               mec=source.get_markeredgecolor(), mew=1.4 if synthetic else 1.1,
+                               zorder=source.get_zorder(), alpha=.7 if synthetic else 1.)
                     if not synthetic:copied.set_path_effects([pe.withStroke(linewidth=2.5, foreground='white')])
                     nuclear_values.extend(np.asarray(source.get_ydata())[np.isfinite(source.get_ydata())].tolist())
                 rows = [r for r in records if r['component'] == name]
@@ -317,9 +317,9 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                     actual = line.get_gid().startswith('photometry:')
                     copied, = panel.plot(line.get_xdata(), line.get_ydata(), color=line.get_color(),
                                ls=line.get_linestyle(), lw=.65, marker=line.get_marker(),
-                               ms=9.5 if synthetic else 7.5, mfc=line.get_markerfacecolor(),
-                               mec=line.get_markeredgecolor(), mew=.8 if synthetic else 1.1,
-                               zorder=line.get_zorder(), alpha=.6 if synthetic else 1.)
+                               ms=11.5 if synthetic else 7.5, mfc=line.get_markerfacecolor(),
+                               mec=line.get_markeredgecolor(), mew=1.4 if synthetic else 1.1,
+                               zorder=line.get_zorder(), alpha=.7 if synthetic else 1.)
                     if actual:copied.set_path_effects([pe.withStroke(linewidth=2.5, foreground='white')])
                     y = np.asarray(line.get_ydata());y = y[np.isfinite(y) & (y > 0)]
                     if line.get_gid().startswith('stellar-spectrum:'):continuum.extend(y.tolist())

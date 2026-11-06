@@ -5,17 +5,13 @@ import numpy as np
 from astropy import units as u
 
 
-class HSTThroughput:
-    def __init__(self, obsmode, *, integration='cached'):
+class BandpassThroughput:
+    """Cached photon-weighted integration for an explicit synphot bandpass."""
+    def __init__(self, bandpass, *, integration='cached'):
         if integration not in {'cached', 'reference'}:
             raise ValueError('integration must be cached or reference')
         self.integration = integration
-        try:
-            import stsynphot
-        except ImportError as exc:
-            raise ImportError("Install chromorph[stellar] and STSynphot reference tables") from exc
-        self.obsmode = obsmode
-        self.bandpass = stsynphot.band(obsmode)
+        self.bandpass = bandpass
         wave = self.bandpass.waveset.to_value(u.AA)
         response = self.bandpass(self.bandpass.waveset).value
         self.fingerprint = hashlib.sha256(wave.tobytes()+response.tobytes()).hexdigest()
@@ -84,3 +80,29 @@ class HSTThroughput:
     @property
     def pivot_angstrom(self):
         return float(self.bandpass.pivot().to_value(u.AA))
+
+
+class HSTThroughput(BandpassThroughput):
+    """Optional STSynphot throughput, selected by an explicit HST obsmode."""
+    def __init__(self, obsmode, *, integration='cached'):
+        try:
+            import stsynphot
+        except ImportError as exc:
+            raise ImportError('Install chromorph[stellar] and STSynphot reference tables') from exc
+        self.obsmode = obsmode
+        super().__init__(stsynphot.band(obsmode), integration=integration)
+
+
+class TabulatedThroughput(BandpassThroughput):
+    """Instrument-independent response on a wavelength grid in Angstrom."""
+    def __init__(self, wave_angstrom, response, *, integration='cached'):
+        from synphot import SpectralElement
+        from synphot.models import Empirical1D
+        wave, values = np.asarray(wave_angstrom, float), np.asarray(response, float)
+        if (wave.ndim != 1 or values.shape != wave.shape or len(wave) < 2
+                or not np.isfinite(wave).all() or not np.isfinite(values).all()
+                or np.any(wave <= 0) or np.any(np.diff(wave) <= 0)
+                or np.any(values < 0) or not np.any(values > 0)):
+            raise ValueError('Throughput requires increasing positive wavelengths and finite nonnegative response')
+        super().__init__(SpectralElement(Empirical1D, points=wave*u.AA,
+            lookup_table=values, fill_value=0.), integration=integration)

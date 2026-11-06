@@ -27,7 +27,7 @@ def load_config(path):
     config = yaml.safe_load(Path(path).read_text())
     if not isinstance(config, dict):
         raise ValueError("Configuration must be a YAML mapping")
-    _keys(config, ['target', 'data_root', 'metadata', 'morphology', 'psf', 'context',
+    _keys(config, ['target', 'data_root', 'observations', 'metadata', 'morphology', 'psf', 'context',
                    'components', 'ties', 'centroid_groups', 'throughputs', 'fitting', 'initial_values'], 'top-level')
     morphology = config.get('morphology', {})
     _keys(morphology, ['wavelength_mode', 'centroid_mode', 'renderer'], 'morphology')
@@ -37,8 +37,12 @@ def load_config(path):
         raise ValueError("Unknown centroid mode")
     psf = config.get('psf', {})
     _keys(psf, ['source', 'already_drizzled'], 'PSF')
-    if psf.get('source', 'empirical_v2') != 'empirical_v2' or not psf.get('already_drizzled', True):
-        raise ValueError("This loader uses existing, already-drizzled empirical_v2 PSFs")
+    if 'observations' in config:
+        manifest = Path(config['observations'])
+        config['observations'] = str(manifest if manifest.is_absolute() else Path(path).resolve().parent/manifest)
+    elif 'data_root' in config:
+        root = Path(config['data_root'])
+        config['data_root'] = str(root if root.is_absolute() else Path(path).resolve().parent/root)
     return config
 
 

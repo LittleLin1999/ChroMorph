@@ -13,6 +13,10 @@ sources must use unconstrained `FreeBandSED`; they are not classified as AGN.
 
 ## Install
 
+Keep package source, target inputs and analysis results in separate directories.
+The package has no target-specific discovery rules or filesystem paths.
+See [observation manifests](docs/INPUTS.md) for instrument-independent input loading.
+
 ```sh
 python -m venv .venv
 . .venv/bin/activate
@@ -37,7 +41,7 @@ from chromorph.sed import FreeBandSED, FSPSStellarSED
 
 # observations: calibrated Observation instances, with a per-observation PSF,
 # uncertainty map, inclusion mask and reference-to-observation transform.
-with Scene(observations, context=SEDContext(redshift=0.608)) as scene:
+with Scene(observations, context=SEDContext(redshift=0.1)) as scene:
     scene.add_component(PointSource(
         'nucleus', FreeBandSED(), x=50., y=50., nuclear=True))
     scene.add_component(Sersic(
@@ -63,7 +67,7 @@ stellar mass, metallicity and dust attenuation. For this model the intrinsic
 constant SFR is formed mass divided by duration in years; it is not an extra
 normalization shared across clumps. `ssp` and `exponential` are explicit
 systematic alternatives. Legacy `young` and `old` select SSP starting ages and
-are not the J1042 default. `constant`, `ssp`, `exponential`, and `delayed` choose SFH families per
+do not select a universal population model. `constant`, `ssp`, `exponential`, and `delayed` choose SFH families per
 component. `dust_type` selects its independent FSPS attenuation family. Mass
 means **formed stellar mass**, in solar masses; luminosities are divided by
 FSPS `formed_mass` before applying that normalization. Age is in Gyr,
@@ -74,44 +78,27 @@ use the context manager. Redshift, distance and foreground extinction are
 observational context, not shared intrinsic stellar populations.
 
 With `nebular=True`, stellar-powered nebular lines and continuum are enabled.
-`gas_logu=-2` is fixed independently in each component by default: four HST
-bands do not justify automatically fitting an additional ionization parameter.
+`gas_logu=-2` is fixed independently in each component by default: limited photometry does not justify automatically fitting an additional ionization parameter.
 An explicit per-component `Parameter(..., vary=True)` can enable it. Gas
 metallicity follows that component's stellar metallicity unless overridden.
 The nuclear point source always retains its free per-filter SED.
 
-## J1042
+## Command line
 
-Discover the actual products without inventing missing images, errors or PSFs:
+Supply an explicit observation manifest and independent component configuration:
 
 ```sh
-chromorph discover-j1042 /home/linxiaojing/data/lrd-squared/hst \
-  --output results/j1042_inventory.json --config-dir examples/generated
-chromorph fit examples/generated/A_free.yaml --output results/A_free
-chromorph fit examples/generated/B_constant_sfr.yaml --output results/B_constant_sfr
-chromorph compare examples/generated/{A_free,B_constant_sfr,C_ssp}.yaml \
-  --output results/comparison
-chromorph validate examples/generated/A_free.yaml \
-  --repeats 10 --output results/recovery_A.json
+chromorph inspect observations.yaml
+chromorph fit examples/A_free.yaml --output results/free
+chromorph compare examples/A_free.yaml examples/B_constant_sfr.yaml examples/C_ssp.yaml --output results/comparison
+chromorph validate examples/A_free.yaml --repeats 10 --output results/recovery.json
 ```
 
-The checked-in example configurations contain illustrative starting values,
-not fitted J1042 measurements. Regenerate them against your actual data root. Model B
-uses a **separate constant-SFR** FSPS object with nebular emission enabled for
-each extended component. Model C uses independent SSPs; an exponentially
-declining alternative is also generated but is not fitted automatically. Edit component
-initial guesses, bounds, SFH, nebular choices and dust laws independently.
-Generated Sérsic-index bounds are intersected with GalSim's supported
-0.3–6.2 range; this is a numerical renderer restriction, not a common population
-prior. Fits compare identical images, PSFs, masks and uncertainty maps.
-
-The loader verifies existing source/PSF hashes and uses the selected fit's
-stored data, masks, noise, sky and registration; WHT is not assumed to be a full
-variance model. See [J1042 setup](docs/J1042_SETUP.md) and
-[validation status](docs/VALIDATION.md). Private same-input SFH reports separate
-best-fit sensitivity from statistical significance. Four-band population
-constraints, PSF mismatch and correlated-noise uncertainty coverage require
-additional validation before strong scientific conclusions.
+The example component configurations are illustrative. Provide your own images,
+uncertainties, inclusion masks, PSFs, calibration, geometry and optional filter
+throughputs in the manifest. No target name is interpreted specially. The Python
+`Scene`/`Observation` interface also accepts arbitrary calibrated arrays.
+Target discovery and reduction QA belong in external analysis adapters.
 
 ## Conventions and diagnostics
 
@@ -189,7 +176,7 @@ library and Python bindings with MPI and a Fortran compiler, plus
 `pip install '.[polychord]'`. Then run, for example:
 
 ```sh
-mpiexec -n 24 chromorph sample-polychord examples/generated/B_constant_sfr.yaml \
+mpiexec -n 24 chromorph sample-polychord examples/B_constant_sfr.yaml \
   --output results/B_polychord --nlive 1300 --num-repeats 104 --precision 0.01
 ```
 

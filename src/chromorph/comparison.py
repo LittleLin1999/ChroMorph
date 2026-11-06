@@ -14,7 +14,8 @@ def compare_sfh_results(directories, output):
     paths = {name: Path(path) for name, path in directories.items()}
     output = Path(output);output.mkdir(parents=True, exist_ok=True)
     results = {name: json.loads((path/'result.json').read_text()) for name, path in paths.items()}
-    baseline = 'A_free' if 'A_free' in results else next(iter(results))
+    baseline = next((name for name, result in results.items()
+        if all(c['sed']['model'] == 'free' for c in result['component_definitions'].values())), next(iter(results)))
     reference = results[baseline]
     with fits.open(paths[baseline]/'images.fits', checksum=True) as first:
         for name, path in paths.items():
@@ -70,14 +71,19 @@ def compare_sfh_results(directories, output):
     # Distinct time definitions are reported separately; do not subtract SSP
     # ages from constant-SFR durations as if they were one measured quantity.
     mass_systematics = []
-    if 'B_constant_sfr' in results and 'C_ssp' in results:
-        constant, ssp = results['B_constant_sfr']['values'], results['C_ssp']['values']
-        for row in populations:
-            if row['model'] != 'B_constant_sfr':continue
-            key = row['component']+'.sed.log_mass'
-            delta = constant[key]-ssp[key]
-            mass_systematics.append(dict(component=row['component'], delta_log_formed_mass_constant_minus_ssp=delta,
-                                          formed_mass_ratio_constant_to_ssp=10**delta))
+    constant_models = [name for name, result in results.items()
+        if any(c['sed'].get('sfh') == 'constant' for c in result['component_definitions'].values())]
+    ssp_models = [name for name, result in results.items()
+        if any(c['sed'].get('sfh') == 'ssp' for c in result['component_definitions'].values())]
+    for constant_name in constant_models:
+        for ssp_name in ssp_models:
+            constant, ssp = results[constant_name], results[ssp_name]
+            for component, definition in constant['component_definitions'].items():
+                if definition['sed'].get('sfh') != 'constant' or ssp['component_definitions'][component]['sed'].get('sfh') != 'ssp':continue
+                key = component+'.sed.log_mass'
+                delta = constant['values'][key]-ssp['values'][key]
+                mass_systematics.append(dict(component=component, constant_model=constant_name, ssp_model=ssp_name,
+                    delta_log_formed_mass_constant_minus_ssp=delta, formed_mass_ratio_constant_to_ssp=10**delta))
     morphology_sensitivity = []
     for row in morph:
         if row['model'] == baseline or 're' not in row:continue
@@ -95,7 +101,7 @@ def compare_sfh_results(directories, output):
         morphology_sensitivity=morphology_sensitivity,
         caveats=['BIC-like ignores drizzle covariance and is not Bayesian evidence.',
                  'SFH-dependent best-fit shifts are systematic sensitivities, not significance estimates.',
-                 'Four bands can leave age, metallicity, dust and formed mass weakly constrained.',
+                 'Limited filter coverage can leave age, metallicity, dust and formed mass weakly constrained.',
                  'Total photometry includes profile extrapolation; compare frame-integrated rates as well.',
                  'Centroid matching is a label-switch diagnostic, not proof of physical component identity.'])
     (output/'sfh_comparison.json').write_text(json.dumps(_json(summary), indent=2)+'\n')
@@ -113,7 +119,7 @@ def compare_sfh_results(directories, output):
         ax.set(title=component, xticks=range(len(bands)), xticklabels=bands, ylabel='Flux (µJy)')
         ax.legend(fontsize=8)
     fig.savefig(output/'component_photometry_sfh.pdf');fig.savefig(output/'component_photometry_sfh.png', dpi=160);plt.close(fig)
-    body = '<h1>J1042: free-band, constant-SFR and SSP comparison</h1><p>Identical data, masks, uncertainty maps and empirical PSFs verified. Nuclear band fluxes remain independent in every model.</p>'
+    body = '<h1>Component SED and morphology comparison</h1><p>Identical data, masks, uncertainty maps and empirical PSFs verified. Nuclear band fluxes remain independent in every model.</p>'
     body += '<table><tr><th>Model</th><th>Converged</th><th>Image χ²</th><th>Parameters</th><th>BIC-like</th><th>Local rank</th></tr>'
     for name, result in results.items():
         relative = os.path.relpath(paths[name].resolve(), output.resolve())
