@@ -52,6 +52,8 @@ def test_full_range_stellar_sum_and_synthetic_marker_convention(tmp_path, render
     lines = {line.get_gid(): line for line in figure.axes[0].lines if line.get_gid()}
     assert lines['synthetic:one'].get_markerfacecolor() == 'white'
     assert lines['photometry:one'].get_markerfacecolor() != 'white'
+    assert lines['synthetic:one'].get_zorder() < lines['photometry:one'].get_zorder()
+    assert lines['synthetic:one'].get_alpha() < 1.
     assert 'stellar-spectrum:nucleus' not in lines
     total = lines['stellar-spectrum:total']
     assert total.get_xdata().max() == 2.5

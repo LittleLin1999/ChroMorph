@@ -167,16 +167,17 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
             error = np.array([errors.get(error_key, {}).get(o.band, np.nan) for o in observed], dtype=float)
             if actual is not None:
                 line, = ax.plot(waves, np.where(actual > 0, convert(actual), np.nan), ls='none',
-                    marker=marker, ms=size, mfc=color, mec=color, mew=1., label=label, zorder=7)
+                    marker=marker, ms=size, mfc=color, mec='#263238', mew=1.1, label=label, zorder=9)
                 line.set_gid('photometry:'+key)
+                line.set_path_effects([pe.withStroke(linewidth=2.5, foreground='white')])
                 valid = np.isfinite(error) & (error >= 0) & (actual > 0)
                 if np.any(valid):
                     ax.errorbar(waves[valid], convert(actual)[valid], yerr=convert(error)[valid],
-                                fmt='none', ecolor=color, elinewidth=.75, capsize=2, zorder=6)
+                                fmt='none', ecolor=color, elinewidth=1., capsize=2.5, zorder=8)
             if physical:
                 line, = ax.plot(waves, np.where(model > 0, convert(model), np.nan), ls='none',
-                    marker='o', ms=6., mfc='white', mec=color, mew=1.25,
-                    label=label if actual is None else None, zorder=8)
+                    marker='o', ms=size+2., mfc='white', mec=color, mew=.85, alpha=.6,
+                    label=label if actual is None else None, zorder=6)
                 line.set_gid('synthetic:'+key)
             for i, o in enumerate(observed):
                 records.append(dict(component=key, band=o.band, wavelength_angstrom=pivots[i],
@@ -236,7 +237,7 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                     ha='center', va='bottom', fontsize=9)
         handles, labels = ax.get_legend_handles_labels()
         if physical:
-            handles.append(Line2D([], [], ls='none', marker='o', ms=6., mfc='white', mec='#333333', mew=1.25))
+            handles.append(Line2D([], [], ls='none', marker='o', ms=8., mfc='white', mec='#333333', mew=.85, alpha=.6))
             labels.append('Synthetic')
         legend = ax.legend(handles, labels, loc='upper right', ncol=2, fontsize=9, frameon=False,
                            labelspacing=.35, columnspacing=1.2, handletextpad=.45)
@@ -273,8 +274,12 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
             for name in point_names:
                 for source in ax.lines:
                     if source.get_gid() not in {'photometry:'+name, 'synthetic:'+name}:continue
-                    panel.plot(source.get_xdata(), source.get_ydata(), ls='none', marker=source.get_marker(),
-                               ms=5., mfc=source.get_markerfacecolor(), mec=source.get_markeredgecolor(), mew=1.)
+                    synthetic = source.get_gid().startswith('synthetic:')
+                    copied, = panel.plot(source.get_xdata(), source.get_ydata(), ls='none', marker=source.get_marker(),
+                               ms=9.5 if synthetic else 7.5, mfc=source.get_markerfacecolor(),
+                               mec=source.get_markeredgecolor(), mew=.8 if synthetic else 1.1,
+                               zorder=source.get_zorder(), alpha=.6 if synthetic else 1.)
+                    if not synthetic:copied.set_path_effects([pe.withStroke(linewidth=2.5, foreground='white')])
                     nuclear_values.extend(np.asarray(source.get_ydata())[np.isfinite(source.get_ydata())].tolist())
                 rows = [r for r in records if r['component'] == name]
                 actual = np.array([r['photometry_microjy'] for r in rows])
@@ -282,7 +287,7 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                 valid = np.isfinite(actual) & np.isfinite(error)
                 if valid.any():
                     panel.errorbar(waves[valid], convert(actual)[valid], yerr=convert(error)[valid],
-                                   fmt='none', ecolor='#a54449', elinewidth=.7, capsize=2)
+                                   fmt='none', ecolor='#a54449', elinewidth=1.1, capsize=3, zorder=8)
             finite = np.asarray(nuclear_values)
             low, high = np.percentile(finite, [3, 92]) if len(finite) else (0., 1.)
             if segment_bounds:low=min(v[0] for v in segment_bounds);high=max(v[1] for v in segment_bounds)
@@ -308,9 +313,14 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                 continuum = [];photometric = []
                 for line in ax.lines:
                     if line.get_gid() not in {'stellar-spectrum:'+c.name, 'photometry:'+c.name, 'synthetic:'+c.name}:continue
-                    panel.plot(line.get_xdata(), line.get_ydata(), color=line.get_color(),
+                    synthetic = line.get_gid().startswith('synthetic:')
+                    actual = line.get_gid().startswith('photometry:')
+                    copied, = panel.plot(line.get_xdata(), line.get_ydata(), color=line.get_color(),
                                ls=line.get_linestyle(), lw=.65, marker=line.get_marker(),
-                               ms=5., mfc=line.get_markerfacecolor(), mec=line.get_markeredgecolor(), mew=1.)
+                               ms=9.5 if synthetic else 7.5, mfc=line.get_markerfacecolor(),
+                               mec=line.get_markeredgecolor(), mew=.8 if synthetic else 1.1,
+                               zorder=line.get_zorder(), alpha=.6 if synthetic else 1.)
+                    if actual:copied.set_path_effects([pe.withStroke(linewidth=2.5, foreground='white')])
                     y = np.asarray(line.get_ydata());y = y[np.isfinite(y) & (y > 0)]
                     if line.get_gid().startswith('stellar-spectrum:'):continuum.extend(y.tolist())
                     else:photometric.extend(y.tolist())
@@ -319,7 +329,7 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                 actual = np.array([r['photometry_microjy'] for r in rows])
                 good = np.isfinite(error) & np.isfinite(actual) & (actual > 0)
                 if good.any():panel.errorbar(waves[good], convert(actual)[good], yerr=convert(error)[good],
-                                            fmt='none', ecolor=color, elinewidth=.6, capsize=1.5)
+                                            fmt='none', ecolor=color, elinewidth=1.1, capsize=3, zorder=8)
                 base = np.asarray(continuum or photometric or [1.])
                 low, high = np.percentile(base, [3, 90])
                 if photometric:low=min(low,min(photometric));high=max(high,max(photometric))
@@ -354,6 +364,7 @@ def plot_component_sed(result, directory, *, title='ChroMorph component SEDs',
                         flux_definition='total_microjy', context_used_in_likelihood=False,
                         photometry_source=photometry_source, measured_error_type='local linear covariance',
                         synthetic_style='white face, colored edge', measured_style='filled color',
+                        photometry_emphasis='Opaque filled foreground markers with dark edges/white halo and stronger errors; translucent hollow synthetic markers behind.',
                         nuclear_curves=False, total_stellar_curve=bool(spectra),
                         separate_components=separate_components, spectrum_provenance=spectrum_provenance,
                         panel_ylimits=panel_ylimits, nuclear_subtracted_spectra=bool(nuclear_spectra),
